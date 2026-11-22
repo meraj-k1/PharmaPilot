@@ -1,0 +1,91 @@
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+
+    container_name: pharmapilot-api
+
+    restart: unless-stopped
+
+    ports:
+      - "8002:8000"
+
+    env_file:
+      - .env
+
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      EMBEDDING_SERVICE_URL: http://embedder:80
+      EMBEDDING_MODEL: intfloat/multilingual-e5-small
+      VECTOR_DIMENSIONS: 384
+
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/scripts:/app/scripts
+
+    depends_on:
+      db:
+        condition: service_healthy
+      embedder:
+        condition: service_started
+
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+
+  db:
+    image: pgvector/pgvector:pg17
+
+    container_name: pharmapilot-db
+
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+
+    ports:
+      - "5434:5432"
+
+    volumes:
+      - pharmapilot-db-data:/var/lib/postgresql/data
+      - ./backend/scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  embedder:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
+
+    container_name: pharmapilot-embedder
+
+    restart: unless-stopped
+
+    command:
+      - --model-id
+      - intfloat/multilingual-e5-small
+
+    ports:
+      - "8010:80"
+
+    volumes:
+      - pharmapilot-embedder-cache:/data
+
+volumes:
+  pharmapilot-db-data:
+    name: pharmapilot_pgdata
+
+  pharmapilot-embedder-cache:
+    name: pharmapilot_embedder_cache
