@@ -9,19 +9,26 @@ import {
 import { Link } from "react-router";
 
 import {
+  Activity,
   AlertCircle,
   AlertTriangle,
+  ArrowRight,
   ArrowUpRight,
   Bot,
   BookOpen,
   CalendarClock,
-  CircleCheck,
+  CheckCircle2,
+  Clock3,
+  Layers3,
   Package,
   Pill,
   RefreshCw,
   ShoppingCart,
   Truck,
+  type LucideIcon,
 } from "lucide-react";
+
+import { api } from "../../lib/api";
 
 import {
   loadDashboard,
@@ -30,162 +37,311 @@ import {
 
 import "./dashboard.css";
 
-function formatDate(value: string | null): string {
+
+type InventorySummary = {
+  total_medicines: number;
+  total_batches: number;
+  total_units: number;
+  stock_value: number;
+  expiring_units: number;
+};
+
+type SummaryState = {
+  data: InventorySummary | null;
+  error: string | null;
+};
+
+type OverviewCardProps = {
+  label: string;
+  value: number | null;
+  subtitle: string;
+  icon: LucideIcon;
+  href: string;
+  variant?: "blue" | "teal" | "amber" | "rose";
+};
+
+const numberFormat = new Intl.NumberFormat("en-BD");
+
+const currencyFormat = new Intl.NumberFormat("en-BD", {
+  style: "currency",
+  currency: "BDT",
+  maximumFractionDigits: 2,
+});
+
+function numberFrom(value: unknown): number | null {
+  if (
+    typeof value !== "number" &&
+    typeof value !== "string"
+  ) {
+    return null;
+  }
+
+  if (value === "") return null;
+
+  const result = Number(value);
+
+  return Number.isFinite(result) ? result : null;
+}
+
+function parseSummary(value: unknown): InventorySummary {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    throw new Error("Invalid inventory summary response");
+  }
+
+  const record = value as Record<string, unknown>;
+
+  const fields = [
+    "total_medicines",
+    "total_batches",
+    "total_units",
+    "stock_value",
+    "expiring_units",
+  ] as const;
+
+  for (const field of fields) {
+    if (numberFrom(record[field]) === null) {
+      throw new Error(
+        `Inventory summary missing ${field}`
+      );
+    }
+  }
+
+  return {
+    total_medicines: numberFrom(
+      record.total_medicines
+    )!,
+    total_batches: numberFrom(
+      record.total_batches
+    )!,
+    total_units: numberFrom(
+      record.total_units
+    )!,
+    stock_value: numberFrom(
+      record.stock_value
+    )!,
+    expiring_units: numberFrom(
+      record.expiring_units
+    )!,
+  };
+}
+
+function dateText(
+  value: string | null | undefined
+): string {
   if (!value) return "—";
 
   const date = new Date(value);
 
-  return Number.isNaN(date.getTime())
-    ? value
-    : date.toLocaleDateString("en-GB", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      });
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
 }
 
-function formatMoney(value: number | null): string {
-  if (value === null) return "—";
-
-  return new Intl.NumberFormat("en-BD", {
-    style: "currency",
-    currency: "BDT",
-    maximumFractionDigits: 2,
-  }).format(value);
+function overviewError(error: unknown): string {
+  return error instanceof Error
+    ? error.message
+    : "Unable to refresh dashboard.";
 }
 
-type StatCardProps = {
-  title: string;
-  value: number | null;
-  icon: typeof Pill;
-  href: string;
-  description: string;
-  tone?: "default" | "warning" | "danger";
-};
-
-function StatCard({
-  title,
+function MetricCard({
+  label,
   value,
+  subtitle,
   icon: Icon,
   href,
-  description,
-  tone = "default",
-}: StatCardProps) {
+  variant = "blue",
+}: OverviewCardProps) {
   return (
     <Link
       to={href}
-      className={`analytics-stat ${tone}`}
+      className={`ppdash-metric ppdash-metric--${variant}`}
     >
-      <div className="analytics-stat-top">
-        <div className="analytics-stat-icon">
-          <Icon size={22} />
-        </div>
-        <ArrowUpRight size={18} />
+      <div className="ppdash-metric-head">
+        <span className="ppdash-icon">
+          <Icon size={21} />
+        </span>
+
+        <ArrowUpRight
+          size={17}
+          className="ppdash-muted-icon"
+        />
       </div>
 
-      <span>{title}</span>
+      <span className="ppdash-metric-label">
+        {label}
+      </span>
 
-      <strong>
+      <strong className="ppdash-metric-number">
         {value === null
-          ? "Unavailable"
-          : value.toLocaleString()}
+          ? "—"
+          : numberFormat.format(value)}
       </strong>
 
-      <small>{description}</small>
+      <span className="ppdash-metric-caption">
+        {subtitle}
+      </span>
     </Link>
   );
 }
 
-function ModuleLink({
+function SectionHeading({
   title,
-  description,
+  subtitle,
   href,
-  icon: Icon,
+  action = "View all",
 }: {
   title: string;
-  description: string;
-  href: string;
-  icon: typeof Pill;
+  subtitle: string;
+  href?: string;
+  action?: string;
 }) {
   return (
-    <Link className="analytics-module-link" to={href}>
-      <div className="analytics-module-icon">
-        <Icon size={20} />
-      </div>
-
+    <div className="ppdash-section-heading">
       <div>
-        <strong>{title}</strong>
-        <span>{description}</span>
+        <h2>{title}</h2>
+        <p>{subtitle}</p>
       </div>
 
-      <ArrowUpRight size={17} />
+      {href && (
+        <Link to={href}>
+          {action}
+          <ArrowUpRight size={16} />
+        </Link>
+      )}
+    </div>
+  );
+}
+
+function EmptyMessage({
+  message,
+}: {
+  message: string;
+}) {
+  return (
+    <div className="ppdash-empty">
+      <CheckCircle2 size={23} />
+      <span>{message}</span>
+    </div>
+  );
+}
+
+function QuickAction({
+  to,
+  icon: Icon,
+  label,
+  description,
+}: {
+  to: string;
+  icon: LucideIcon;
+  label: string;
+  description: string;
+}) {
+  return (
+    <Link className="ppdash-action" to={to}>
+      <span className="ppdash-action-icon">
+        <Icon size={21} />
+      </span>
+
+      <span className="ppdash-action-copy">
+        <strong>{label}</strong>
+        <small>{description}</small>
+      </span>
+
+      <ArrowRight size={17} />
     </Link>
   );
 }
 
 export default function DashboardPage() {
-  const [data, setData] = useState<DashboardData | null>(
-    null
-  );
+  const [data, setData] =
+    useState<DashboardData | null>(null);
+
+  const [summary, setSummary] =
+    useState<SummaryState>({
+      data: null,
+      error: null,
+    });
 
   const [loading, setLoading] = useState(true);
+
   const [refreshError, setRefreshError] =
     useState<string | null>(null);
 
+  const [lastUpdated, setLastUpdated] =
+    useState<Date | null>(null);
+
+  // Fetch module data and inventory summary
+  // separately so a failure in one does not
+  // automatically hide the other.
   const refresh = useCallback(async () => {
     setLoading(true);
     setRefreshError(null);
 
-    try {
-      const result = await loadDashboard();
-      setData(result);
-    } catch (error) {
+    const [dashboardResult, summaryResult] =
+      await Promise.allSettled([
+        loadDashboard(),
+        api.get<unknown>("/inventory/summary"),
+      ]);
+
+    if (dashboardResult.status === "fulfilled") {
+      setData(dashboardResult.value);
+    } else {
       setRefreshError(
-        error instanceof Error
-          ? error.message
-          : "Dashboard refresh failed."
+        overviewError(dashboardResult.reason)
       );
-    } finally {
-      setLoading(false);
     }
+
+    if (summaryResult.status === "fulfilled") {
+      try {
+        setSummary({
+          data: parseSummary(
+            summaryResult.value.data
+          ),
+          error: null,
+        });
+      } catch (error) {
+        setSummary({
+          data: null,
+          error: overviewError(error),
+        });
+      }
+    } else {
+      setSummary({
+        data: null,
+        error: overviewError(
+          summaryResult.reason
+        ),
+      });
+    }
+
+    setLastUpdated(new Date());
+    setLoading(false);
   }, []);
+
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, refreshKey]);
 
-  const stats = useMemo(() => {
-    if (!data) return null;
-
-    return {
-      medicines: data.medicines.error
-        ? null
-        : data.medicines.data.length,
-
-      inventory: data.inventory.error
-        ? null
-        : data.inventory.data.length,
-
-      lowStock: data.lowStock.error
-        ? null
-        : data.lowStock.data.length,
-
-      expiring: data.expiring.error
-        ? null
-        : data.expiring.data.length,
-
-      suppliers: data.suppliers.error
-        ? null
-        : data.suppliers.data.length,
-
-      purchases: data.purchases.error
-        ? null
-        : data.purchases.data.length,
-    };
-  }, [data]);
+  function handleRefresh() {
+    setRefreshKey((current) => current + 1);
+  }
 
   const recentPurchases = useMemo(() => {
-    if (!data || data.purchases.error) return [];
+    if (!data || data.purchases.error) {
+      return [];
+    }
 
     return [...data.purchases.data]
       .sort((a, b) =>
@@ -196,313 +352,418 @@ export default function DashboardPage() {
       .slice(0, 5);
   }, [data]);
 
-  const lowStockPreview = useMemo(() => {
-    if (!data || data.lowStock.error) return [];
+  const lowStock = useMemo(() => {
+    if (!data || data.lowStock.error) {
+      return [];
+    }
 
-    return data.lowStock.data.slice(0, 5);
+    return [...data.lowStock.data]
+      .sort((a, b) => a.quantity - b.quantity)
+      .slice(0, 5);
   }, [data]);
 
-  const chartRows = useMemo(() => {
-    if (!stats) return [];
+  const expiring = useMemo(() => {
+    if (!data || data.expiring.error) {
+      return [];
+    }
+
+    return [...data.expiring.data]
+      .sort((a, b) =>
+        (a.expiry_date ?? "").localeCompare(
+          b.expiry_date ?? ""
+        )
+      )
+      .slice(0, 5);
+  }, [data]);
+
+  const moduleErrors = useMemo(() => {
+    if (!data) return [];
 
     return [
-      { label: "Medicines", value: stats.medicines },
-      { label: "Stock records", value: stats.inventory },
-      { label: "Low-stock results", value: stats.lowStock },
-      { label: "Expiry results", value: stats.expiring },
-      { label: "Suppliers", value: stats.suppliers },
-      { label: "Purchases", value: stats.purchases },
-    ];
-  }, [stats]);
+      ["Medicines", data.medicines.error],
+      ["Inventory", data.inventory.error],
+      ["Low stock", data.lowStock.error],
+      ["Expiring", data.expiring.error],
+      ["Suppliers", data.suppliers.error],
+      ["Purchases", data.purchases.error],
+    ].filter(
+      (row): row is [string, string] =>
+        Boolean(row[1])
+    );
+  }, [data]);
 
-  const maxChartValue = Math.max(
-    1,
-    ...chartRows.map((row) => row.value ?? 0)
-  );
+  const liveSummary = summary.data;
 
-  const apiErrors = data
-    ? [
-        ["Medicines", data.medicines.error],
-        ["Inventory", data.inventory.error],
-        ["Low stock", data.lowStock.error],
-        ["Expiry", data.expiring.error],
-        ["Suppliers", data.suppliers.error],
-        ["Purchases", data.purchases.error],
-      ].filter((entry) => entry[1])
-    : [];
+  const stockValue =
+    liveSummary?.stock_value ?? null;
+
+  const expiryCount =
+    data && !data.expiring.error
+      ? data.expiring.data.length
+      : null;
+
+  const lowCount =
+    data && !data.lowStock.error
+      ? data.lowStock.data.length
+      : null;
 
   return (
-    <div className="analytics-dashboard">
-      <header className="analytics-heading">
+    <main className="ppdash-root">
+
+      {/* HERO SECTION */}
+      <section className="ppdash-hero">
         <div>
-          <span className="eyebrow">
-            PHARMAPILOT OVERVIEW
+          <span className="ppdash-kicker">
+            <span className="ppdash-kicker-dot" />
+            PHARMAPILOT CONTROL CENTER
           </span>
-          <h1>Dashboard</h1>
+
+          <h1>Pharmacy Dashboard</h1>
+
           <p>
-            Your pharmacy operations at a glance.
+            See inventory health, upcoming expiries,
+            purchases and the operations that need
+            attention.
           </p>
+
+          <div className="ppdash-hero-meta">
+            <Clock3 size={15} />
+
+            {lastUpdated
+              ? `Last checked ${lastUpdated.toLocaleTimeString(
+                  "en-BD",
+                  {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  }
+                )}`
+              : "Not loaded yet"}
+          </div>
         </div>
 
         <button
           type="button"
-          className="analytics-refresh"
-          onClick={() => void refresh()}
+          onClick={handleRefresh}
           disabled={loading}
+          className="ppdash-refresh"
         >
           <RefreshCw
             size={17}
-            className={loading ? "analytics-spin" : ""}
+            className={
+              loading ? "ppdash-spin" : ""
+            }
           />
-          {loading ? "Loading..." : "Refresh data"}
-        </button>
-      </header>
 
+          {loading
+            ? "Refreshing..."
+            : "Refresh dashboard"}
+        </button>
+      </section>
+
+      {/* API ERRORS */}
       {refreshError && (
-        <div className="analytics-error" role="alert">
-          <AlertCircle size={18} />
-          {refreshError}
+        <div
+          className="ppdash-error"
+          role="alert"
+        >
+          <AlertCircle size={19} />
+          <span>{refreshError}</span>
         </div>
       )}
 
-      {apiErrors.length > 0 && (
-        <div className="analytics-error" role="alert">
+      {summary.error && (
+        <div
+          className="ppdash-error"
+          role="alert"
+        >
+          <AlertCircle size={19} />
+
+          <span>
+            Inventory summary unavailable:{" "}
+            {summary.error}
+          </span>
+        </div>
+      )}
+
+      {moduleErrors.length > 0 && (
+        <div
+          className="ppdash-error"
+          role="alert"
+        >
           <AlertTriangle size={19} />
 
           <div>
             <strong>
-              Some dashboard sections could not load.
+              Some dashboard modules could not
+              be loaded.
             </strong>
 
-            {apiErrors.map(([name, error]) => (
-              <p key={name}>
-                {name}: {error}
-              </p>
-            ))}
+            <div className="ppdash-error-lines">
+              {moduleErrors.map(([name, error]) => (
+                <span key={name}>
+                  {name}: {error}
+                </span>
+              ))}
+            </div>
           </div>
         </div>
       )}
 
-      <section className="analytics-stats-grid">
-        <StatCard
-          title="Medicines"
-          value={stats?.medicines ?? null}
+      {/* INVENTORY METRICS */}
+      <section
+        className="ppdash-metrics"
+        aria-label="Inventory metrics"
+      >
+        <MetricCard
+          label="Active medicines"
+          value={
+            liveSummary?.total_medicines ?? null
+          }
+          subtitle="From complete inventory summary"
           icon={Pill}
           href="/medicines"
-          description="Loaded catalog records"
         />
 
-        <StatCard
-          title="Stock Records"
-          value={stats?.inventory ?? null}
+        <MetricCard
+          label="Inventory batches"
+          value={
+            liveSummary?.total_batches ?? null
+          }
+          subtitle="Total batch records"
+          icon={Layers3}
+          href="/inventory"
+          variant="teal"
+        />
+
+        <MetricCard
+          label="Physical stock"
+          value={
+            liveSummary?.total_units ?? null
+          }
+          subtitle="Units across all batches"
           icon={Package}
           href="/inventory"
-          description="Loaded inventory records"
+          variant="blue"
         />
 
-        <StatCard
-          title="Low Stock"
-          value={stats?.lowStock ?? null}
-          icon={AlertTriangle}
-          href="/inventory"
-          description="Records from alert endpoint"
-          tone="warning"
-        />
-
-        <StatCard
-          title="Expiring Batches"
-          value={stats?.expiring ?? null}
+        <MetricCard
+          label="Expiring units"
+          value={
+            liveSummary?.expiring_units ?? null
+          }
+          subtitle="Within 30 days · backend metric"
           icon={CalendarClock}
           href="/inventory"
-          description="Records within 30-day query"
-          tone="danger"
-        />
-
-        <StatCard
-          title="Suppliers"
-          value={stats?.suppliers ?? null}
-          icon={Truck}
-          href="/suppliers"
-          description="Loaded supplier records"
-        />
-
-        <StatCard
-          title="Purchases"
-          value={stats?.purchases ?? null}
-          icon={ShoppingCart}
-          href="/purchases"
-          description="Loaded purchase records"
+          variant="rose"
         />
       </section>
 
-      <div className="analytics-content-grid">
-        <section className="analytics-panel">
-          <div className="analytics-panel-heading">
-            <div>
-              <h2>Operations snapshot</h2>
-              <p>Comparison of loaded API record counts</p>
-            </div>
+      {/* INVENTORY VALUE + ATTENTION */}
+      <section
+        className="ppdash-spotlight"
+        aria-label="Inventory valuation"
+      >
+        <div className="ppdash-valuation">
+          <div className="ppdash-valuation-icon">
+            <Activity size={23} />
           </div>
 
-          <div className="analytics-chart">
-            {chartRows.map((row) => {
-              const width =
-                row.value === null
-                  ? 0
-                  : (row.value / maxChartValue) * 100;
+          <div>
+            <span>Inventory value at cost</span>
 
-              return (
-                <div
-                  key={row.label}
-                  className="analytics-chart-row"
-                >
-                  <span>{row.label}</span>
+            <strong>
+              {stockValue === null
+                ? "Not available"
+                : currencyFormat.format(
+                    stockValue
+                  )}
+            </strong>
 
-                  <div className="analytics-chart-track">
-                    <div
-                      className="analytics-chart-fill"
-                      style={{ width: `${width}%` }}
-                    />
-                  </div>
+            <small>
+              Physical inventory valuation from
+              your API; it may include expired batches.
+            </small>
+          </div>
+        </div>
 
-                  <strong>
-                    {row.value === null
-                      ? "N/A"
-                      : row.value}
-                  </strong>
-                </div>
-              );
-            })}
+        <div className="ppdash-attention">
+          <div>
+            <AlertTriangle size={20} />
+            <strong>Needs attention</strong>
           </div>
 
-          <p className="analytics-chart-note">
-            These are record counts from different
-            datasets, not comparable financial values.
+          <p>
+            <b>
+              {lowCount === null
+                ? "—"
+                : numberFormat.format(lowCount)}
+            </b>{" "}
+            returned low-stock medicine records
           </p>
-        </section>
 
-        <section className="analytics-panel">
-          <div className="analytics-panel-heading">
-            <div>
-              <h2>Quick access</h2>
-              <p>Open pharmacy management tools</p>
-            </div>
-          </div>
+          <p>
+            <b>
+              {expiryCount === null
+                ? "—"
+                : numberFormat.format(expiryCount)}
+            </b>{" "}
+            loaded expiry alerts
+          </p>
 
-          <div className="analytics-module-list">
-            <ModuleLink
-              title="Medicine catalog"
-              description="Manage medicines"
-              href="/medicines"
-              icon={Pill}
-            />
+          <small>
+            Alerts depend on the dashboard API's
+            returned record limits.
+          </small>
 
-            <ModuleLink
-              title="Inventory"
-              description="Review stock and expiry"
-              href="/inventory"
-              icon={Package}
-            />
+          <Link to="/inventory">
+            Review inventory
+            <ArrowRight size={15} />
+          </Link>
+        </div>
+      </section>
 
-            <ModuleLink
-              title="Knowledge base"
-              description="Upload and search documents"
-              href="/knowledge"
-              icon={BookOpen}
-            />
-
-            <ModuleLink
-              title="AI Assistant"
-              description="Ask PharmaPilot AI"
-              href="/ai-chat"
-              icon={Bot}
-            />
-          </div>
-        </section>
-      </div>
-
-      <div className="analytics-content-grid">
-        <section className="analytics-panel">
-          <div className="analytics-panel-heading">
-            <div>
-              <h2>Low-stock preview</h2>
-              <p>First five returned alert records</p>
-            </div>
-
-            <Link to="/inventory">
-              View inventory
-              <ArrowUpRight size={15} />
-            </Link>
-          </div>
+      {/* LOW STOCK + UPCOMING EXPIRY */}
+      <section className="ppdash-two-col">
+        <div className="ppdash-panel">
+          <SectionHeading
+            title="Low-stock priorities"
+            subtitle="Medicines that may need replenishment"
+            href="/inventory"
+            action="Open inventory"
+          />
 
           {data?.lowStock.error ? (
-            <div className="analytics-empty">
+            <div className="ppdash-empty">
               Low-stock data unavailable.
             </div>
-          ) : lowStockPreview.length === 0 ? (
-            <div className="analytics-empty">
-              <CircleCheck size={28} />
-              No low-stock records returned.
+          ) : !data && loading ? (
+            <div className="ppdash-empty">
+              Loading alerts...
             </div>
+          ) : lowStock.length === 0 ? (
+            <EmptyMessage
+              message="No low-stock alerts in loaded results."
+            />
           ) : (
-            <div className="analytics-table-wrap">
-              <table className="analytics-table">
-                <thead>
-                  <tr>
-                    <th>Medicine</th>
-                    <th>Batch</th>
-                    <th>Quantity</th>
-                  </tr>
-                </thead>
+            <div className="ppdash-list">
+              {lowStock.map((item, index) => (
+                <div
+                  className="ppdash-list-row"
+                  key={`${item.id}-${index}`}
+                >
+                  <span className="ppdash-list-symbol ppdash-list-symbol--amber">
+                    <AlertTriangle size={17} />
+                  </span>
 
-                <tbody>
-                  {lowStockPreview.map((item, index) => (
-                    <tr key={`${item.id}-${index}`}>
-                      <td>
-                        <strong>
-                          {item.medicine_name}
-                        </strong>
-                      </td>
+                  <div className="ppdash-list-primary">
+                    <strong>
+                      {item.medicine_name}
+                    </strong>
 
-                      <td>
-                        {item.batch_number || "—"}
-                      </td>
+                    <small>
+                      Medicine-level stock alert
+                    </small>
+                  </div>
 
-                      <td>
-                        {item.quantity}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                  <div className="ppdash-list-number">
+                    <strong>
+                      {numberFormat.format(
+                        item.quantity
+                      )}
+                    </strong>
+                    <small>available</small>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
-        </section>
+        </div>
 
-        <section className="analytics-panel">
-          <div className="analytics-panel-heading">
-            <div>
-              <h2>Recent purchases</h2>
-              <p>Most recent loaded purchase records</p>
+        <div className="ppdash-panel">
+          <SectionHeading
+            title="Upcoming expiry"
+            subtitle="First five records returned by the 30-day query"
+            href="/inventory"
+            action="Manage batches"
+          />
+
+          {data?.expiring.error ? (
+            <div className="ppdash-empty">
+              Expiry data unavailable.
             </div>
+          ) : !data && loading ? (
+            <div className="ppdash-empty">
+              Loading batches...
+            </div>
+          ) : expiring.length === 0 ? (
+            <EmptyMessage
+              message="No expiry alerts in loaded results."
+            />
+          ) : (
+            <div className="ppdash-list">
+              {expiring.map((item, index) => (
+                <div
+                  className="ppdash-list-row"
+                  key={`${item.id}-${index}`}
+                >
+                  <span className="ppdash-list-symbol ppdash-list-symbol--rose">
+                    <CalendarClock size={17} />
+                  </span>
 
-            <Link to="/purchases">
-              View purchases
-              <ArrowUpRight size={15} />
-            </Link>
-          </div>
+                  <div className="ppdash-list-primary">
+                    <strong>
+                      {item.medicine_name}
+                    </strong>
+
+                    <small>
+                      {item.batch_number ||
+                        "Batch number unavailable"}
+                    </small>
+                  </div>
+
+                  <div className="ppdash-list-number">
+                    <strong>
+                      {dateText(item.expiry_date)}
+                    </strong>
+
+                    <small>
+                      {numberFormat.format(
+                        item.quantity
+                      )}{" "}
+                      units
+                    </small>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* PURCHASES + QUICK ACTIONS */}
+      <section className="ppdash-two-col">
+        <div className="ppdash-panel">
+          <SectionHeading
+            title="Recent purchases"
+            subtitle="Most recent records from the loaded purchase list"
+            href="/purchases"
+          />
 
           {data?.purchases.error ? (
-            <div className="analytics-empty">
+            <div className="ppdash-empty">
               Purchase data unavailable.
             </div>
+          ) : !data && loading ? (
+            <div className="ppdash-empty">
+              Loading purchases...
+            </div>
           ) : recentPurchases.length === 0 ? (
-            <div className="analytics-empty">
-              No purchase records returned.
+            <div className="ppdash-empty">
+              No purchases in the loaded results.
             </div>
           ) : (
-            <div className="analytics-table-wrap">
-              <table className="analytics-table">
+            <div className="ppdash-table-scroller">
+              <table className="ppdash-table">
                 <thead>
                   <tr>
                     <th>Purchase</th>
@@ -512,46 +773,106 @@ export default function DashboardPage() {
                 </thead>
 
                 <tbody>
-                  {recentPurchases.map((purchase) => (
-                    <tr key={purchase.id}>
-                      <td>
-                        <strong>
-                          {purchase.reference_number ||
-                            purchase.id.slice(0, 8)}
-                        </strong>
-                      </td>
+                  {recentPurchases.map(
+                    (purchase) => (
+                      <tr key={purchase.id}>
+                        <td>
+                          <strong>
+                            {purchase.reference_number ||
+                              purchase.id.slice(
+                                0,
+                                8
+                              )}
+                          </strong>
+                        </td>
 
-                      <td>
-                        {formatDate(purchase.purchase_date)}
-                      </td>
+                        <td>
+                          {dateText(
+                            purchase.purchase_date
+                          )}
+                        </td>
 
-                      <td>
-                        {formatMoney(purchase.total_amount)}
-                      </td>
-                    </tr>
-                  ))}
+                        <td>
+                          {purchase.total_amount ===
+                          null
+                            ? "—"
+                            : currencyFormat.format(
+                                purchase.total_amount
+                              )}
+                        </td>
+                      </tr>
+                    )
+                  )}
                 </tbody>
               </table>
             </div>
           )}
-        </section>
-      </div>
+        </div>
 
-      <footer className="analytics-footer">
+        <div className="ppdash-panel">
+          <SectionHeading
+            title="Quick actions"
+            subtitle="Jump straight into daily pharmacy workflows"
+          />
+
+          <div className="ppdash-actions">
+            <QuickAction
+              to="/medicines"
+              icon={Pill}
+              label="Medicine catalog"
+              description="Add and update medicine records"
+            />
+
+            <QuickAction
+              to="/inventory"
+              icon={Package}
+              label="Inventory management"
+              description="Stock adjustments and expiry alerts"
+            />
+
+            <QuickAction
+              to="/purchases"
+              icon={ShoppingCart}
+              label="Purchase orders"
+              description="Receive new batches through purchases"
+            />
+
+            <QuickAction
+              to="/suppliers"
+              icon={Truck}
+              label="Supplier directory"
+              description="Manage pharmacy suppliers"
+            />
+
+            <QuickAction
+              to="/knowledge"
+              icon={BookOpen}
+              label="Knowledge base"
+              description="Upload and search pharmacy documents"
+            />
+
+            <QuickAction
+              to="/ai-chat"
+              icon={Bot}
+              label="AI assistant"
+              description="Ask authorized pharmacy questions"
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* FOOTER */}
+      <footer className="ppdash-footer">
         <span>
-          {loading
-            ? "Loading dashboard data..."
-            : data
-              ? `Last refreshed: ${new Date(
-                  data.updatedAt
-                ).toLocaleString()}`
-              : "Dashboard data not loaded"}
+          <CheckCircle2 size={15} />
+          Pharmacy-scoped API data
         </span>
 
         <span>
-          Dataset counts may be limited by API pagination.
+          Purchase and alert previews may be
+          incomplete when API pagination limits apply.
         </span>
       </footer>
-    </div>
+    </main>
   );
 }

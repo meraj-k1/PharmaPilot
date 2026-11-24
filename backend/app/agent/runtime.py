@@ -1,3 +1,4 @@
+
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -17,6 +18,8 @@ class AgentResult:
 
 
 class PharmaPilotAgent:
+    MAX_TOOL_CALLS_PER_ROUND = 5
+
     def __init__(
         self,
         db: AsyncSession,
@@ -24,6 +27,7 @@ class PharmaPilotAgent:
     ):
         self.settings = get_settings()
         self.llm = GeminiService()
+
         self.tools = PharmacyToolExecutor(
             db=db,
             pharmacy_id=pharmacy_id,
@@ -34,31 +38,57 @@ class PharmaPilotAgent:
         history: list[dict],
         message: str,
     ) -> AgentResult:
-        contents = []
 
+        contents: list[types.Content] = []
+
+        # Restore previous conversation messages.
         for item in history:
+            role = item.get("role")
+            content = item.get("content", "")
+
+            # Gemini Content accepts user/model roles.
+            if role == "assistant":
+                role = "model"
+
+            if role not in ("user", "model"):
+                continue
+
+            if not isinstance(content, str) or not content.strip():
+                continue
+
             contents.append(
                 types.Content(
-                    role=item["role"],
-                    parts=[types.Part.from_text(text=item["content"])],
+                    role=role,
+                    parts=[
+                        types.Part.from_text(
+                            text=content
+                        )
+                    ],
                 )
             )
 
+        # Add the new user message.
         contents.append(
             types.Content(
                 role="user",
-                parts=[types.Part.from_text(text=message)],
+                parts=[
+                    types.Part.from_text(
+                        text=message
+                    )
+                ],
             )
         )
 
-        tools_used = []
+        tools_used: list[dict] = []
 
-        # Each round may contain several tool calls.
+        # Limit the total number of tool-calling rounds.
         for _ in range(self.settings.AI_MAX_TOOL_ROUNDS):
+
             response = await self.llm.generate(contents)
 
             calls = response.function_calls or []
 
+            # Return final response when no tools are requested.
             if not calls:
                 answer = response.text
 
@@ -74,6 +104,18 @@ class PharmaPilotAgent:
                     tools_used=tools_used,
                 )
 
+            # Reject excessive tool calls before execution.
+            if len(calls) > self.MAX_TOOL_CALLS_PER_ROUND:
+                raise AppException(
+                    message=(
+                        "AI requested too many tool calls "
+                        "in a single round."
+                    ),
+                    status_code=502,
+                    error_code="AI_TOOL_LIMIT",
+                )
+
+            # Preserve the actual Gemini function-call content.
             if not response.candidates:
                 raise AppException(
                     message="Invalid AI tool response.",
@@ -92,25 +134,41 @@ class PharmaPilotAgent:
 
             contents.append(model_content)
 
-            function_parts = []
+            function_parts: list[types.Part] = []
 
-            # Bound tool execution to avoid excessive queries.
-            for call in calls[:5]:
+            # Execute every model-requested function.
+            for call in calls:
+
                 name = call.name or ""
                 arguments = dict(call.args or {})
+
+                if not name:
+                    raise AppException(
+                        message="AI requested a tool without a name.",
+                        status_code=502,
+                        error_code="AI_INVALID_TOOL_CALL",
+                    )
 
                 result = await self.tools.execute(
                     name=name,
                     arguments=arguments,
                 )
 
-                result_items = result.get("medicines") or result.get("batches") or []
+                result_items = (
+                    result.get("medicines")
+                    or result.get("batches")
+                    or []
+                )
 
                 tools_used.append(
                     {
                         "name": name,
                         "arguments": arguments,
-                        "result_count": len(result_items),
+                        "result_count": (
+                            len(result_items)
+                            if isinstance(result_items, list)
+                            else 0
+                        ),
                     }
                 )
 
@@ -121,28 +179,19 @@ class PharmaPilotAgent:
                     )
                 )
 
-            # Return a result for every model-requested function.
-            # Too many calls are rejected rather than silently omitted.
-            # if len(calls) > 5:
-            #     raise AppException(
-            #         message="AI requested too many tool calls.",
-            #         status_code=502,
-            #         error_code="AI_TOOL_LIMIT",
-            #     )
-
-            for call in calls:
-                name = call.name or ""
-                arguments = dict(call.args or {})
-
+            # Gemini expects function responses as user content.
             contents.append(
                 types.Content(
-                    role="tool",
+                    role="user",
                     parts=function_parts,
                 )
             )
 
         raise AppException(
-            message="AI exceeded the permitted tool-call rounds.",
+            message=(
+                "AI exceeded the permitted "
+                "tool-call rounds."
+            ),
             status_code=502,
             error_code="AI_TOOL_ROUND_LIMIT",
         )

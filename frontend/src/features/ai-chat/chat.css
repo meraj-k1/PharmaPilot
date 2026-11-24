@@ -800,3 +800,67 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+.chat-message.assistant {
+  width: 100%;
+  min-width: 0;
+}
+
+.chat-message.assistant .chat-message-body {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chat-message.assistant .pp-ai-message {
+  width: 100%;
+  max-width: 100%;
+}
+
+.chat-message.assistant .pp-ai-message-body {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+.chat-message.assistant .pp-ai-message-body p {
+  white-space: normal;
+}
+
+.chat-message.assistant .pp-ai-message-body ul,
+.chat-message.assistant .pp-ai-message-body ol {
+  display: block;
+}
+
+.chat-message.assistant .pp-ai-message-body li {
+  display: list-item;
+}
+
+.chat-message.assistant .pp-ai-message-body pre {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.chat-message.assistant .pp-ai-message-body pre code {
+  white-space: pre;
+}
+
+.chat-message.assistant .pp-ai-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.chat-message.assistant .pp-ai-table-scroll table {
+  display: table;
+}
+
+@media (max-width: 640px) {
+  .chat-message.assistant .chat-message-body {
+    width: 100%;
+  }
+
+  .chat-message.assistant .pp-ai-message {
+    border-radius: 14px;
+  }
+}

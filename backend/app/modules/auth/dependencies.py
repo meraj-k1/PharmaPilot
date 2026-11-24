@@ -27,12 +27,8 @@ DBSession = Annotated[
 
 
 async def get_current_user(
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Depends(bearer_scheme),
-    ],
-    db: DBSession,
-) -> User:
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    db: DBSession) -> User:
 
     if credentials is None:
         raise UnauthorizedException("Authentication required.")

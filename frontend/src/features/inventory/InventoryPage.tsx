@@ -1,10 +1,5 @@
 
-import {
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-
+import { useEffect, useMemo, useState } from "react";
 import { AxiosError } from "axios";
 
 import {
@@ -14,11 +9,12 @@ import {
   ArrowDownUp,
   Boxes,
   CalendarClock,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  ClipboardEdit,
   Download,
   Eye,
+  History,
   Package,
   RefreshCw,
   Search,
@@ -29,12 +25,16 @@ import {
 import {
   getExpiringPage,
   getInventoryPage,
+  getInventorySummary,
   getLowStock,
 } from "./inventoryApi";
+
+import StockManagementModal from "./StockManagementModal";
 
 import {
   INVENTORY_PAGE_SIZE,
   type InventorySort,
+  type InventorySummary,
   type InventoryTab,
   type StockItem,
   type StockStatus,
@@ -42,21 +42,20 @@ import {
 
 import "./inventory.css";
 
-type StatusFilter =
-  | "all"
-  | "healthy"
-  | "low"
-  | "out"
-  | "expiring"
-  | "expired";
+type StatusFilter = "all" | StockStatus;
+
+type StockAction = {
+  item: StockItem;
+  mode: "adjust" | "history";
+};
 
 const TABS: {
   id: InventoryTab;
-  title: string;
+  label: string;
 }[] = [
-  { id: "all", title: "All Batches" },
-  { id: "low-stock", title: "Low Stock" },
-  { id: "expiring", title: "Expiring" },
+  { id: "all", label: "All Batches" },
+  { id: "low-stock", label: "Low Stock" },
+  { id: "expiring", label: "Expiring" },
 ];
 
 const SORT_OPTIONS: {
@@ -65,69 +64,42 @@ const SORT_OPTIONS: {
 }[] = [
   { value: "name-asc", label: "Name: A to Z" },
   { value: "name-desc", label: "Name: Z to A" },
-  {
-    value: "quantity-asc",
-    label: "Stock: Low to High",
-  },
-  {
-    value: "quantity-desc",
-    label: "Stock: High to Low",
-  },
-  {
-    value: "expiry-asc",
-    label: "Expiry: Earliest",
-  },
-  {
-    value: "expiry-desc",
-    label: "Expiry: Latest",
-  },
+  { value: "quantity-asc", label: "Stock: Low to High" },
+  { value: "quantity-desc", label: "Stock: High to Low" },
+  { value: "expiry-asc", label: "Expiry: Earliest" },
+  { value: "expiry-desc", label: "Expiry: Latest" },
 ];
 
 function parseDate(value: string | null): Date | null {
   if (!value) return null;
 
-  const datePart = value.slice(0, 10);
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(
-    datePart
-  );
-
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
   if (!match) return null;
 
   const year = Number(match[1]);
   const month = Number(match[2]) - 1;
   const day = Number(match[3]);
 
-  const date = new Date(year, month, day);
+  const result = new Date(year, month, day);
 
   if (
-    date.getFullYear() !== year ||
-    date.getMonth() !== month ||
-    date.getDate() !== day
+    result.getFullYear() !== year ||
+    result.getMonth() !== month ||
+    result.getDate() !== day
   ) {
     return null;
   }
 
-  return date;
+  return result;
 }
 
-function todayAtMidnight(): Date {
-  const now = new Date();
-
-  return new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate()
-  );
-}
-
-function getDaysUntilExpiry(
+function daysUntilExpiry(
   value: string | null
 ): number | null {
   const expiry = parseDate(value);
-
   if (!expiry) return null;
 
-  const today = todayAtMidnight();
+  const today = new Date();
 
   const expiryUTC = Date.UTC(
     expiry.getFullYear(),
@@ -146,42 +118,46 @@ function getDaysUntilExpiry(
   );
 }
 
-function getStockStatus(
-  item: StockItem,
-  days = 30
-): StockStatus {
-  const daysLeft = getDaysUntilExpiry(
-    item.expiry_date
-  );
+function formatDate(value: string | null): string {
+  const date = parseDate(value);
 
-  if (daysLeft !== null && daysLeft < 0) {
-    return "expired";
+  return date
+    ? date.toLocaleDateString("en-GB", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      })
+    : "Not specified";
+}
+
+function getStatus(
+  item: StockItem,
+  days: number
+): StockStatus {
+  // Low-stock records represent medicines, not batches.
+  if (item.source === "low-stock") {
+    return item.quantity <= 0 ? "out" : "low";
   }
 
+  // Batch records have expiry-based statuses.
   if (item.quantity <= 0) {
     return "out";
   }
 
-  if (
-    daysLeft !== null &&
-    daysLeft <= days
-  ) {
-    return "expiring";
+  const remaining = daysUntilExpiry(item.expiry_date);
+
+  if (remaining !== null && remaining < 0) {
+    return "expired";
   }
 
-  if (
-    item.reorder_level !== null &&
-    item.quantity <= item.reorder_level
-  ) {
-    return "low";
+  if (remaining !== null && remaining <= days) {
+    return "expiring";
   }
 
   return "healthy";
 }
 
-function getStatusLabel(
-  status: StockStatus
-): string {
+function statusLabel(status: StockStatus): string {
   const labels: Record<StockStatus, string> = {
     healthy: "Healthy",
     low: "Low Stock",
@@ -193,26 +169,9 @@ function getStatusLabel(
   return labels[status];
 }
 
-function formatDate(
-  value: string | null
-): string {
-  const date = parseDate(value);
-
-  if (!date) return "Not specified";
-
-  return date.toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-}
-
-function getErrorMessage(
-  error: unknown
-): string {
+function getErrorMessage(error: unknown): string {
   if (error instanceof AxiosError) {
     const status = error.response?.status;
-    const data = error.response?.data;
 
     if (status === 401) {
       return "Session expired. Please log in again.";
@@ -222,18 +181,27 @@ function getErrorMessage(
       return "You do not have permission to view inventory.";
     }
 
-    if (status === 404) {
-      return "Inventory API endpoint was not found.";
-    }
+    const payload: unknown = error.response?.data;
 
-    if (
-      typeof data?.error?.message === "string"
-    ) {
-      return data.error.message;
-    }
+    if (payload && typeof payload === "object") {
+      if ("detail" in payload) {
+        if (typeof payload.detail === "string") {
+          return payload.detail;
+        }
+      }
 
-    if (typeof data?.detail === "string") {
-      return data.detail;
+      if ("error" in payload) {
+        const apiError = payload.error;
+
+        if (
+          apiError &&
+          typeof apiError === "object" &&
+          "message" in apiError &&
+          typeof apiError.message === "string"
+        ) {
+          return apiError.message;
+        }
+      }
     }
 
     return error.message || "Inventory request failed.";
@@ -242,6 +210,51 @@ function getErrorMessage(
   return error instanceof Error
     ? error.message
     : "Unable to load inventory.";
+}
+
+function StatusBadge({
+  status,
+}: {
+  status: StockStatus;
+}) {
+  return (
+    <span className={`inventory-status ${status}`}>
+      <span className="inventory-status-dot" />
+      {statusLabel(status)}
+    </span>
+  );
+}
+
+function ExpiryDisplay({
+  date,
+}: {
+  date: string | null;
+}) {
+  const remaining = daysUntilExpiry(date);
+
+  return (
+    <div className="inventory-expiry">
+      <strong>{formatDate(date)}</strong>
+
+      {remaining !== null && (
+        <span
+          className={
+            remaining < 0
+              ? "danger"
+              : remaining <= 30
+                ? "warning"
+                : ""
+          }
+        >
+          {remaining < 0
+            ? `${Math.abs(remaining)} days overdue`
+            : remaining === 0
+              ? "Expires today"
+              : `${remaining} days remaining`}
+        </span>
+      )}
+    </div>
+  );
 }
 
 function StatCard({
@@ -272,72 +285,37 @@ function StatCard({
   );
 }
 
-function StatusBadge({
-  status,
-}: {
-  status: StockStatus;
-}) {
-  return (
-    <span className={`inventory-status ${status}`}>
-      <span className="inventory-status-dot" />
-      {getStatusLabel(status)}
-    </span>
-  );
-}
-
-function ExpiryDisplay({
-  value,
-}: {
-  value: string | null;
-}) {
-  const days = getDaysUntilExpiry(value);
-
-  return (
-    <div className="inventory-expiry">
-      <strong>{formatDate(value)}</strong>
-
-      {days !== null && (
-        <span
-          className={
-            days < 0
-              ? "danger"
-              : days <= 30
-                ? "warning"
-                : ""
-          }
-        >
-          {days < 0
-            ? `${Math.abs(days)} days overdue`
-            : days === 0
-              ? "Expires today"
-              : `${days} days remaining`}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function exportCsv(items: StockItem[]) {
+function exportCsv(
+  records: StockItem[],
+  days: number
+) {
   const rows = [
     [
       "Medicine",
+      "SKU",
       "Medicine ID",
       "Batch",
       "Quantity",
       "Reorder Level",
+      "Shortage",
       "Expiry Date",
       "Status",
     ],
-    ...items.map((item) => [
+
+    ...records.map((item) => [
       item.medicine_name,
+      item.sku,
       item.medicine_id,
       item.batch_number,
       String(item.quantity),
       item.reorder_level === null
         ? ""
         : String(item.reorder_level),
+      item.shortage === null
+        ? ""
+        : String(item.shortage),
       item.expiry_date ?? "",
-      getStatusLabel(getStockStatus(item)),
+      statusLabel(getStatus(item, days)),
     ]),
   ];
 
@@ -345,9 +323,8 @@ function exportCsv(items: StockItem[]) {
     .map((row) =>
       row
         .map((value) => {
-          const safeValue = /^[\s]*[=+\-@\t\r]/.test(
-            value
-          )
+          // Protect spreadsheet apps from formula injection.
+          const safeValue = /^[\s]*[=+\-@\t\r]/.test(value)
             ? `'${value}`
             : value;
 
@@ -357,36 +334,67 @@ function exportCsv(items: StockItem[]) {
     )
     .join("\r\n");
 
-  const blob = new Blob(
-    ["\uFEFF", csv],
-    {
-      type: "text/csv;charset=utf-8",
-    }
-  );
+  const blob = new Blob(["\uFEFF", csv], {
+    type: "text/csv;charset=utf-8",
+  });
 
   const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
+  const anchor = document.createElement("a");
 
-  link.href = url;
-  link.download = `pharmapilot-inventory-${new Date()
-    .toISOString()
-    .slice(0, 10)}.csv`;
+  anchor.href = url;
+  anchor.download =
+    `pharmapilot-inventory-${new Date()
+      .toISOString()
+      .slice(0, 10)}.csv`;
 
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
 
   URL.revokeObjectURL(url);
 }
 
 function DetailsModal({
   item,
+  days,
   onClose,
 }: {
   item: StockItem;
+  days: number;
   onClose: () => void;
 }) {
-  const status = getStockStatus(item);
+  const status = getStatus(item, days);
+
+  const fields = [
+    ["SKU", item.sku || "—"],
+    [
+      "Record Type",
+      item.source === "low-stock"
+        ? "Medicine Stock"
+        : "Inventory Batch",
+    ],
+    ["Batch Number", item.batch_number || "—"],
+    [
+      item.source === "low-stock"
+        ? "Usable Stock"
+        : "Batch Quantity",
+      item.quantity.toLocaleString(),
+    ],
+    [
+      "Reorder Level",
+      item.reorder_level === null
+        ? "—"
+        : item.reorder_level.toLocaleString(),
+    ],
+    [
+      "Shortage",
+      item.shortage === null
+        ? "—"
+        : item.shortage.toLocaleString(),
+    ],
+    ["Expiry Date", formatDate(item.expiry_date)],
+    ["Medicine ID", item.medicine_id || "—"],
+  ];
 
   return (
     <div
@@ -406,7 +414,7 @@ function DetailsModal({
         <div className="inventory-modal-header">
           <div>
             <span className="inventory-eyebrow">
-              BATCH INFORMATION
+              INVENTORY INFORMATION
             </span>
 
             <h2 id="inventory-details-title">
@@ -425,44 +433,16 @@ function DetailsModal({
         </div>
 
         <div className="inventory-detail-grid">
-          <div>
-            <span>Batch Number</span>
-            <strong>
-              {item.batch_number || "Not specified"}
-            </strong>
-          </div>
+          {fields.map(([label, value]) => (
+            <div key={label}>
+              <span>{label}</span>
+              <strong>{value}</strong>
+            </div>
+          ))}
 
           <div>
-            <span>Available Quantity</span>
-            <strong>
-              {item.quantity.toLocaleString()}
-            </strong>
-          </div>
-
-          <div>
-            <span>Reorder Level</span>
-            <strong>
-              {item.reorder_level === null
-                ? "Not available"
-                : item.reorder_level.toLocaleString()}
-            </strong>
-          </div>
-
-          <div>
-            <span>Expiry Date</span>
-            <strong>{formatDate(item.expiry_date)}</strong>
-          </div>
-
-          <div>
-            <span>Current Status</span>
+            <span>Status</span>
             <StatusBadge status={status} />
-          </div>
-
-          <div>
-            <span>Medicine ID</span>
-            <strong className="inventory-mono">
-              {item.medicine_id || "Not available"}
-            </strong>
           </div>
         </div>
 
@@ -481,19 +461,23 @@ function DetailsModal({
 }
 
 export default function InventoryPage() {
-  const [tab, setTab] =
-    useState<InventoryTab>("all");
+  const [tab, setTab] = useState<InventoryTab>("all");
 
-  const [items, setItems] =
-    useState<StockItem[]>([]);
+  const [items, setItems] = useState<StockItem[]>([]);
 
-  const [loading, setLoading] =
-    useState(true);
+  const [summary, setSummary] =
+    useState<InventorySummary | null>(null);
+
+  const [loading, setLoading] = useState(true);
+
+  const [summaryError, setSummaryError] =
+    useState(false);
 
   const [error, setError] =
     useState<string | null>(null);
 
   const [search, setSearch] = useState("");
+
   const [statusFilter, setStatusFilter] =
     useState<StatusFilter>("all");
 
@@ -508,6 +492,13 @@ export default function InventoryPage() {
   const [selected, setSelected] =
     useState<StockItem | null>(null);
 
+  const [stockAction, setStockAction] =
+    useState<{
+      item: StockItem;
+      mode: "adjust" | "history";
+    } | null>(null);
+
+  // Load inventory records.
   useEffect(() => {
     let active = true;
 
@@ -517,11 +508,11 @@ export default function InventoryPage() {
 
       try {
         if (tab === "low-stock") {
-          const results = await getLowStock();
+          const records = await getLowStock();
 
           if (!active) return;
 
-          setItems(results);
+          setItems(records);
           setHasMore(false);
         } else if (tab === "expiring") {
           const result = await getExpiringPage(
@@ -563,15 +554,43 @@ export default function InventoryPage() {
     return () => {
       active = false;
     };
-  }, [tab, page, days, refreshKey]);
+  }, [tab, days, page, refreshKey]);
+
+  // Load overall statistics from backend.
+  useEffect(() => {
+    let active = true;
+
+    async function loadSummary() {
+      try {
+        const result = await getInventorySummary();
+
+        if (active) {
+          setSummary(result);
+          setSummaryError(false);
+        }
+      } catch {
+        if (active) {
+          setSummary(null);
+          setSummaryError(true);
+        }
+      }
+    }
+
+    void loadSummary();
+
+    return () => {
+      active = false;
+    };
+  }, [refreshKey]);
 
   const filteredItems = useMemo(() => {
     const term = search.trim().toLowerCase();
 
-    const results = items.filter((item) => {
+    const records = items.filter((item) => {
       const searchable = [
         item.medicine_name,
         item.medicine_id,
+        item.sku,
         item.batch_number,
         item.id,
       ]
@@ -583,12 +602,12 @@ export default function InventoryPage() {
 
       const matchesStatus =
         statusFilter === "all" ||
-        getStockStatus(item, days) === statusFilter;
+        getStatus(item, days) === statusFilter;
 
       return matchesSearch && matchesStatus;
     });
 
-    return [...results].sort((a, b) => {
+    return [...records].sort((a, b) => {
       switch (sort) {
         case "name-asc":
           return a.medicine_name.localeCompare(
@@ -628,72 +647,46 @@ export default function InventoryPage() {
     });
   }, [items, search, statusFilter, sort, days]);
 
-  const stats = useMemo(() => {
-    let low = 0;
-    let expiring = 0;
-    let healthy = 0;
-    let totalUnits = 0;
-
-    for (const item of items) {
-      totalUnits += item.quantity;
-
-      const status = getStockStatus(item, days);
-
-      if (
-        item.quantity <= 0 ||
-        (
-          item.reorder_level !== null &&
-          item.quantity <= item.reorder_level
-        )
-      ) {
-        low += 1;
-      }
-
-      const daysLeft = getDaysUntilExpiry(
-        item.expiry_date
-      );
-
-      if (
-        daysLeft !== null &&
-        daysLeft >= 0 &&
-        daysLeft <= days
-      ) {
-        expiring += 1;
-      }
-
-      if (status === "healthy") {
-        healthy += 1;
-      }
-    }
-
-    return {
-      total: items.length,
-      totalUnits,
-      low,
-      expiring,
-      healthy,
-    };
-  }, [items, days]);
-
   function switchTab(next: InventoryTab) {
     setTab(next);
     setPage(1);
     setSearch("");
     setStatusFilter("all");
     setSelected(null);
+    setStockAction(null);
   }
 
   function refresh() {
-    setRefreshKey((previous) => previous + 1);
+    setRefreshKey((value) => value + 1);
   }
 
-  const pageLabel =
-    tab === "low-stock"
-      ? "Returned low-stock records"
-      : `Page ${page} · ${items.length} loaded records`;
+  function openStockAction(
+    item: StockItem,
+    mode: "adjust" | "history"
+  ) {
+    if (item.source !== "batch") return;
+
+    setStockAction({ item, mode });
+  }
+
+  function handleStockChanged() {
+    setStockAction(null);
+    setSelected(null);
+    refresh();
+  }
+
+  const loadedUnits = items.reduce(
+    (total, item) => total + item.quantity,
+    0
+  );
+
+  const loadedLowCount = items.filter(
+    (item) => item.source === "low-stock"
+  ).length;
 
   return (
     <div className="inventory-page">
+      {/* Page Header */}
       <header className="inventory-page-header">
         <div>
           <span className="inventory-eyebrow">
@@ -728,11 +721,10 @@ export default function InventoryPage() {
             type="button"
             className="inventory-btn primary"
             disabled={
-              loading ||
-              filteredItems.length === 0
+              loading || filteredItems.length === 0
             }
             onClick={() =>
-              exportCsv(filteredItems)
+              exportCsv(filteredItems, days)
             }
           >
             <Download size={17} />
@@ -741,94 +733,122 @@ export default function InventoryPage() {
         </div>
       </header>
 
+      {/* Summary Cards */}
       <div className="inventory-stats">
         <StatCard
-          title="Loaded Records"
-          value={stats.total}
-          subtitle={pageLabel}
+          title="Total Medicines"
+          value={
+            summary
+              ? summary.total_medicines.toLocaleString()
+              : "—"
+          }
+          subtitle="Active medicine records"
           icon={Boxes}
         />
 
         <StatCard
-          title="Stock Units"
-          value={stats.totalUnits.toLocaleString()}
-          subtitle="Across loaded records"
+          title="Total Batches"
+          value={
+            summary
+              ? summary.total_batches.toLocaleString()
+              : "—"
+          }
+          subtitle="Across selected pharmacy"
           icon={Package}
           tone="green"
         />
 
         <StatCard
-          title="Low / Out Stock"
-          value={stats.low}
-          subtitle="Below reorder threshold"
-          icon={AlertTriangle}
+          title="Stock Units"
+          value={
+            summary
+              ? summary.total_units.toLocaleString()
+              : "—"
+          }
+          subtitle="Physical stock units"
+          icon={Activity}
           tone="amber"
         />
 
         <StatCard
-          title="Expiring Soon"
-          value={stats.expiring}
-          subtitle={`Within ${days} days`}
+          title="Expiring Units"
+          value={
+            summary
+              ? summary.expiring_units.toLocaleString()
+              : "—"
+          }
+          subtitle="Next 30 days (backend)"
           icon={CalendarClock}
           tone="red"
         />
       </div>
 
+      {summaryError && (
+        <div className="inventory-alert" role="alert">
+          <AlertCircle size={18} />
+          <span>
+            Summary is unavailable. Inventory records
+            may still be viewed below.
+          </span>
+        </div>
+      )}
+
+      {/* Inventory Panel */}
       <section className="inventory-panel">
         <div className="inventory-panel-top">
           <div>
             <h2>Stock Directory</h2>
+
             <p>
-              Browse and inspect your pharmacy stock.
+              Browse, inspect and manage your pharmacy
+              stock.
             </p>
           </div>
 
           <div className="inventory-panel-indicator">
             <Activity size={16} />
-            Connected to Inventory API
+            Inventory API
           </div>
         </div>
 
+        {/* Tabs */}
         <div
           className="inventory-tabs"
           role="tablist"
           aria-label="Inventory categories"
         >
-          {TABS.map((item) => (
+          {TABS.map((option) => (
             <button
-              key={item.id}
+              key={option.id}
               type="button"
               role="tab"
-              aria-selected={tab === item.id}
+              aria-selected={tab === option.id}
               className={
-                tab === item.id ? "active" : ""
+                tab === option.id ? "active" : ""
               }
-              onClick={() => switchTab(item.id)}
+              onClick={() => switchTab(option.id)}
             >
-              {item.id === "all" && (
+              {option.id === "all" ? (
                 <Boxes size={17} />
-              )}
-
-              {item.id === "low-stock" && (
+              ) : option.id === "low-stock" ? (
                 <AlertTriangle size={17} />
-              )}
-
-              {item.id === "expiring" && (
+              ) : (
                 <CalendarClock size={17} />
               )}
 
-              {item.title}
+              {option.label}
             </button>
           ))}
         </div>
 
+        {/* Search and Filters */}
         <div className="inventory-toolbar">
           <div className="inventory-search">
             <Search size={18} />
 
             <input
               type="search"
-              placeholder="Search medicine, batch or ID..."
+              placeholder="Search medicine, SKU, batch..."
               value={search}
               onChange={(event) =>
                 setSearch(event.target.value)
@@ -848,7 +868,7 @@ export default function InventoryPage() {
                     event.target.value as StatusFilter
                   )
                 }
-                aria-label="Filter stock status"
+                aria-label="Filter status"
               >
                 <option value="all">
                   All Statuses
@@ -901,37 +921,28 @@ export default function InventoryPage() {
                 <select
                   value={days}
                   onChange={(event) => {
-                    setDays(
-                      Number(event.target.value)
-                    );
+                    setDays(Number(event.target.value));
                     setPage(1);
                   }}
-                  aria-label="Expiry window"
+                  aria-label="Expiry period"
                 >
-                  <option value={7}>
-                    Next 7 days
-                  </option>
-                  <option value={15}>
-                    Next 15 days
-                  </option>
-                  <option value={30}>
-                    Next 30 days
-                  </option>
-                  <option value={60}>
-                    Next 60 days
-                  </option>
-                  <option value={90}>
-                    Next 90 days
-                  </option>
-                  <option value={180}>
-                    Next 180 days
-                  </option>
+                  {[7, 15, 30, 60, 90, 180].map(
+                    (value) => (
+                      <option
+                        key={value}
+                        value={value}
+                      >
+                        Next {value} days
+                      </option>
+                    )
+                  )}
                 </select>
               </label>
             )}
           </div>
         </div>
 
+        {/* Results Bar */}
         <div className="inventory-results-bar">
           <span>
             {loading
@@ -941,11 +952,12 @@ export default function InventoryPage() {
 
           <span>
             {tab === "low-stock"
-              ? "Low-stock overview"
+              ? "Medicine-level stock"
               : `Page ${page}`}
           </span>
         </div>
 
+        {/* Error State */}
         {error && (
           <div
             className="inventory-alert"
@@ -963,6 +975,7 @@ export default function InventoryPage() {
           </div>
         )}
 
+        {/* Loading */}
         {loading ? (
           <div className="inventory-loading">
             {Array.from({ length: 6 }).map(
@@ -975,14 +988,15 @@ export default function InventoryPage() {
             )}
           </div>
         ) : error ? null : filteredItems.length === 0 ? (
+          /* Empty State */
           <div className="inventory-empty">
             <Package size={38} />
 
             <h3>No inventory records found</h3>
 
             <p>
-              Try changing your search, filters,
-              or selected inventory tab.
+              Try changing your search, filters or
+              selected inventory tab.
             </p>
 
             <button
@@ -997,26 +1011,45 @@ export default function InventoryPage() {
             </button>
           </div>
         ) : (
+          /* Stock Table */
           <div className="inventory-table-scroll">
             <table className="inventory-table">
               <thead>
                 <tr>
                   <th>Medicine</th>
-                  <th>Batch</th>
-                  <th>Quantity</th>
-                  <th>Reorder Level</th>
-                  <th>Expiry Date</th>
+
+                  <th>
+                    {tab === "low-stock"
+                      ? "SKU"
+                      : "Batch"}
+                  </th>
+
+                  <th>
+                    {tab === "low-stock"
+                      ? "Usable Stock"
+                      : "Batch Quantity"}
+                  </th>
+
+                  <th>
+                    {tab === "low-stock"
+                      ? "Shortage"
+                      : "Reorder Level"}
+                  </th>
+
+                  <th>
+                    {tab === "low-stock"
+                      ? "Reorder Level"
+                      : "Expiry Date"}
+                  </th>
+
                   <th>Status</th>
-                  <th>Details</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
 
               <tbody>
                 {filteredItems.map((item) => {
-                  const status = getStockStatus(
-                    item,
-                    days
-                  );
+                  const status = getStatus(item, days);
 
                   return (
                     <tr key={item.id}>
@@ -1032,9 +1065,11 @@ export default function InventoryPage() {
                             </strong>
 
                             <span>
-                              {item.medicine_id
-                                ? `ID: ${item.medicine_id.slice(0, 8)}...`
-                                : "Medicine ID unavailable"}
+                              {item.sku ||
+                                item.medicine_id.slice(
+                                  0,
+                                  8
+                                )}
                             </span>
                           </div>
                         </div>
@@ -1042,7 +1077,9 @@ export default function InventoryPage() {
 
                       <td>
                         <span className="inventory-batch">
-                          {item.batch_number || "—"}
+                          {tab === "low-stock"
+                            ? item.sku || "—"
+                            : item.batch_number || "—"}
                         </span>
                       </td>
 
@@ -1059,35 +1096,74 @@ export default function InventoryPage() {
                       </td>
 
                       <td>
-                        {item.reorder_level === null
-                          ? "—"
-                          : item.reorder_level.toLocaleString()}
+                        {tab === "low-stock"
+                          ? item.shortage?.toLocaleString() ??
+                            "—"
+                          : item.reorder_level?.toLocaleString() ??
+                            "—"}
                       </td>
 
                       <td>
-                        <ExpiryDisplay
-                          value={item.expiry_date}
-                        />
+                        {tab === "low-stock"
+                          ? item.reorder_level?.toLocaleString() ??
+                            "—"
+                          : (
+                            <ExpiryDisplay
+                              date={item.expiry_date}
+                            />
+                          )}
                       </td>
 
                       <td>
-                        <StatusBadge
-                          status={status}
-                        />
+                        <StatusBadge status={status} />
                       </td>
 
+                      {/* New Stock Management Actions */}
                       <td>
-                        <button
-                          type="button"
-                          className="inventory-icon-button"
-                          aria-label={`View ${item.medicine_name}`}
-                          title="View batch details"
-                          onClick={() =>
-                            setSelected(item)
-                          }
-                        >
-                          <Eye size={18} />
-                        </button>
+                        <div className="stock-action-buttons">
+                          <button
+                            type="button"
+                            title="View inventory details"
+                            onClick={() =>
+                              setSelected(item)
+                            }
+                          >
+                            <Eye size={15} />
+                            View
+                          </button>
+
+                          {item.source === "batch" && (
+                            <>
+                              <button
+                                type="button"
+                                title="Adjust existing batch stock"
+                                onClick={() =>
+                                  openStockAction(
+                                    item,
+                                    "adjust"
+                                  )
+                                }
+                              >
+                                <ClipboardEdit size={15} />
+                                Adjust
+                              </button>
+
+                              <button
+                                type="button"
+                                title="View stock movement history"
+                                onClick={() =>
+                                  openStockAction(
+                                    item,
+                                    "history"
+                                  )
+                                }
+                              >
+                                <History size={15} />
+                                History
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -1097,6 +1173,7 @@ export default function InventoryPage() {
           </div>
         )}
 
+        {/* Pagination */}
         {!loading && !error && (
           <div className="inventory-footer">
             <span>
@@ -1110,8 +1187,8 @@ export default function InventoryPage() {
                   type="button"
                   disabled={page <= 1}
                   onClick={() =>
-                    setPage((previous) =>
-                      Math.max(1, previous - 1)
+                    setPage((value) =>
+                      Math.max(1, value - 1)
                     )
                   }
                 >
@@ -1125,9 +1202,7 @@ export default function InventoryPage() {
                   type="button"
                   disabled={!hasMore}
                   onClick={() =>
-                    setPage(
-                      (previous) => previous + 1
-                    )
+                    setPage((value) => value + 1)
                   }
                 >
                   Next
@@ -1139,20 +1214,45 @@ export default function InventoryPage() {
         )}
       </section>
 
+      {/* Information */}
       <div className="inventory-help">
-        <CheckCircle2 size={18} />
+        <AlertTriangle size={18} />
 
         <span>
-          Stock figures come from the Inventory API.
-          Statistics, search, sorting and CSV export
-          apply to the currently loaded records.
+          Inventory summary comes from the backend.
+          Search, sorting and CSV export apply only
+          to loaded records. Low Stock uses
+          medicine-level quantities, not individual
+          batch quantities.
         </span>
       </div>
 
+      {tab === "low-stock" && !loading && !error && (
+        <div className="inventory-help">
+          <span>
+            Low Stock Records: {loadedLowCount}.
+            Units in Loaded Records:{" "}
+            {loadedUnits.toLocaleString()}.
+          </span>
+        </div>
+      )}
+
+      {/* Details Modal */}
       {selected && (
         <DetailsModal
           item={selected}
+          days={days}
           onClose={() => setSelected(null)}
+        />
+      )}
+
+      {/* Stock Adjustment / History Modal */}
+      {stockAction && (
+        <StockManagementModal
+          item={stockAction.item}
+          mode={stockAction.mode}
+          onClose={() => setStockAction(null)}
+          onChanged={handleStockChanged}
         />
       )}
     </div>

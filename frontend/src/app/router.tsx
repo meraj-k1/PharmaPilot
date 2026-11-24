@@ -1,8 +1,4 @@
-
-import {
-  createBrowserRouter,
-  Navigate,
-} from "react-router";
+import { createBrowserRouter, Navigate } from "react-router";
 
 import { isAuthenticated } from "../lib/auth";
 
@@ -16,6 +12,8 @@ import SuppliersPage from "../features/suppliers/SuppliersPage";
 import PurchasesPage from "../features/purchases/PurchasesPage";
 import KnowledgePage from "../features/knowledge/KnowledgePage";
 import ChatPage from "../features/ai-chat/ChatPage";
+// import LoginPage from "../features/auth/LoginPage";
+import RegisterPage from "../features/auth/RegisterPage";
 
 function ProtectedLayout() {
   if (!isAuthenticated()) {
@@ -29,6 +27,10 @@ export const router = createBrowserRouter([
   {
     path: "/login",
     element: <LoginPage />,
+  },
+  {
+    path: "/register",
+    element: <RegisterPage />,
   },
   {
     path: "/",

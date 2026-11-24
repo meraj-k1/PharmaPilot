@@ -27,6 +27,7 @@ import {
 
 import {
   createPurchase,
+  getPurchase,
   getPurchaseMedicines,
   getPurchaseSuppliers,
   getPurchases,
@@ -43,10 +44,41 @@ import type {
 
 import "./purchases.css";
 
+// ============================================================
+// TYPES
+// ============================================================
+
 type Notice = {
   type: "success" | "error";
   message: string;
 };
+
+type PurchaseFormProps = {
+  suppliers: SupplierOption[];
+  medicines: MedicineOption[];
+  saving: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSave: (
+    supplierId: string,
+    items: PurchaseDraftItem[]
+  ) => Promise<void>;
+};
+
+type ReceiveFormProps = {
+  purchase: Purchase;
+  medicines: MedicineOption[];
+  saving: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSave: (
+    lines: ReceiveDraftLine[]
+  ) => Promise<void>;
+};
+
+// ============================================================
+// HELPERS
+// ============================================================
 
 function newItem(): PurchaseDraftItem {
   return {
@@ -55,57 +87,6 @@ function newItem(): PurchaseDraftItem {
     quantity: "1",
     unit_cost: "",
   };
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof AxiosError) {
-    const status = error.response?.status;
-    const data = error.response?.data;
-
-    if (status === 401) {
-      return "Session expired. Please log in again.";
-    }
-
-    if (status === 403) {
-      return "Only an authorized pharmacy admin can perform this action.";
-    }
-
-    if (status === 404) {
-      return "Purchase API resource not found.";
-    }
-
-    if (status === 409) {
-      return typeof data?.detail === "string"
-        ? data.detail
-        : "This operation conflicts with the current purchase status.";
-    }
-
-    if (Array.isArray(data?.detail)) {
-      return data.detail
-        .map((item: { loc?: unknown[]; msg?: string }) => {
-          const path = Array.isArray(item.loc)
-            ? item.loc.join(".")
-            : "";
-
-          return `${path}: ${item.msg ?? "Invalid value"}`;
-        })
-        .join("; ");
-    }
-
-    if (typeof data?.detail === "string") {
-      return data.detail;
-    }
-
-    if (typeof data?.error?.message === "string") {
-      return data.error.message;
-    }
-
-    return error.message || "Request failed.";
-  }
-
-  return error instanceof Error
-    ? error.message
-    : "Unexpected error occurred.";
 }
 
 function money(value: number | string): string {
@@ -119,18 +100,22 @@ function money(value: number | string): string {
     : "0.00";
 }
 
-function formatDate(value: string | null): string {
+function formatDate(
+  value: string | null | undefined
+): string {
   if (!value) return "—";
 
   const date = new Date(value);
 
-  return Number.isNaN(date.getTime())
-    ? value
-    : date.toLocaleDateString("en-GB", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      });
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
 }
 
 function today(): string {
@@ -143,21 +128,140 @@ function today(): string {
   ].join("-");
 }
 
+function validDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const date = new Date(`${value}T00:00:00Z`);
+
+  return (
+    !Number.isNaN(date.getTime()) &&
+    date.toISOString().slice(0, 10) === value
+  );
+}
+
 function isValidCost(value: string): boolean {
-  return /^\d{1,10}(\.\d{1,2})?$/.test(value) &&
-    Number.isFinite(Number(value));
+  return (
+    /^\d{1,10}(\.\d{1,2})?$/.test(value) &&
+    Number.isFinite(Number(value))
+  );
+}
+
+function isDraft(status: string): boolean {
+  return status.trim().toLowerCase() === "draft";
+}
+
+function isReceived(status: string): boolean {
+  return status.trim().toLowerCase() === "received";
 }
 
 function getStatusClass(status: string): string {
-  const value = status.toLowerCase();
+  const normalized = status.trim().toLowerCase();
 
-  if (value === "received") return "received";
-  if (value === "cancelled" || value === "canceled") {
+  if (normalized === "received") {
+    return "received";
+  }
+
+  if (
+    normalized === "cancelled" ||
+    normalized === "canceled"
+  ) {
     return "cancelled";
   }
 
   return "pending";
 }
+
+function errorMessage(error: unknown): string {
+  if (error instanceof AxiosError) {
+    const status = error.response?.status;
+    const data: unknown = error.response?.data;
+
+    if (status === 401) {
+      return "Session expired. Please log in again.";
+    }
+
+    if (status === 403) {
+      return (
+        "Only an authorized pharmacy admin " +
+        "can perform this action."
+      );
+    }
+
+    if (status === 404) {
+      return "Purchase resource not found.";
+    }
+
+    if (
+      data &&
+      typeof data === "object" &&
+      !Array.isArray(data)
+    ) {
+      const payload = data as Record<string, unknown>;
+
+      if (typeof payload.detail === "string") {
+        return payload.detail;
+      }
+
+      if (Array.isArray(payload.detail)) {
+        return payload.detail
+          .map((entry: unknown) => {
+            if (
+              entry &&
+              typeof entry === "object" &&
+              "msg" in entry
+            ) {
+              const issue = entry as {
+                loc?: unknown[];
+                msg?: unknown;
+              };
+
+              const location = Array.isArray(issue.loc)
+                ? issue.loc.join(".")
+                : "";
+
+              return `${location}: ${String(issue.msg ?? "Invalid value")}`;
+            }
+
+            return String(entry);
+          })
+          .join("; ");
+      }
+
+      if (
+        payload.error &&
+        typeof payload.error === "object" &&
+        "message" in payload.error
+      ) {
+        const apiError = payload.error as {
+          message?: unknown;
+        };
+
+        if (typeof apiError.message === "string") {
+          return apiError.message;
+        }
+      }
+    }
+
+    if (status === 409) {
+      return (
+        "This purchase cannot be received " +
+        "in its current status."
+      );
+    }
+
+    return error.message || "Request failed.";
+  }
+
+  return error instanceof Error
+    ? error.message
+    : "An unexpected error occurred.";
+}
+
+// ============================================================
+// CREATE PURCHASE FORM
+// ============================================================
 
 function PurchaseForm({
   suppliers,
@@ -166,34 +270,24 @@ function PurchaseForm({
   error,
   onClose,
   onSave,
-}: {
-  suppliers: SupplierOption[];
-  medicines: MedicineOption[];
-  saving: boolean;
-  error: string | null;
-  onClose: () => void;
-  onSave: (
-    supplierId: string,
-    items: PurchaseDraftItem[]
-  ) => Promise<void>;
-}) {
+}: PurchaseFormProps) {
   const [supplierId, setSupplierId] = useState("");
-  const [lines, setLines] = useState<PurchaseDraftItem[]>([
-    newItem(),
-  ]);
+
+  const [lines, setLines] = useState<PurchaseDraftItem[]>(
+    [newItem()]
+  );
+
   const [validation, setValidation] = useState("");
 
-  const total = useMemo(
-    () =>
-      lines.reduce(
-        (sum, line) =>
-          sum +
-          (Number(line.quantity) || 0) *
-            (Number(line.unit_cost) || 0),
-        0
-      ),
-    [lines]
-  );
+  const total = useMemo(() => {
+    return lines.reduce(
+      (sum, line) =>
+        sum +
+        (Number(line.quantity) || 0) *
+          (Number(line.unit_cost) || 0),
+      0
+    );
+  }, [lines]);
 
   function updateLine(
     key: string,
@@ -207,49 +301,59 @@ function PurchaseForm({
           : line
       )
     );
+
     setValidation("");
   }
 
   function removeLine(key: string) {
     setLines((current) =>
-      current.filter((line) => line.key !== key)
+      current.filter((item) => item.key !== key)
     );
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(
+    event: FormEvent<HTMLFormElement>
+  ) {
     event.preventDefault();
 
+    if (saving) return;
+
     if (!supplierId) {
-      setValidation("Select a supplier.");
+      setValidation("Please select a supplier.");
       return;
     }
 
     if (lines.length < 1 || lines.length > 100) {
-      setValidation("Add between 1 and 100 items.");
+      setValidation(
+        "Purchase must contain between 1 and 100 items."
+      );
       return;
     }
 
-    const used = new Set<string>();
+    const selectedMedicines = new Set<string>();
 
     for (const line of lines) {
       if (!line.medicine_id) {
-        setValidation("Select a medicine for every item.");
-        return;
-      }
-
-      if (used.has(line.medicine_id)) {
         setValidation(
-          "The same medicine is selected more than once. Combine the quantities."
+          "Please select a medicine for every item."
         );
         return;
       }
 
-      used.add(line.medicine_id);
+      if (selectedMedicines.has(line.medicine_id)) {
+        setValidation(
+          "The same medicine cannot be added twice. " +
+          "Combine its quantities into one line."
+        );
+        return;
+      }
+
+      selectedMedicines.add(line.medicine_id);
 
       const quantity = Number(line.quantity);
 
       if (
-        !Number.isInteger(quantity) ||
+        !Number.isSafeInteger(quantity) ||
         quantity < 1 ||
         quantity > 1_000_000
       ) {
@@ -261,7 +365,8 @@ function PurchaseForm({
 
       if (!isValidCost(line.unit_cost.trim())) {
         setValidation(
-          "Unit cost must be a valid non-negative amount with up to 2 decimal places."
+          "Unit cost must be a valid non-negative " +
+          "amount with up to 2 decimal places."
         );
         return;
       }
@@ -272,18 +377,28 @@ function PurchaseForm({
   }
 
   return (
-    <form className="purchase-form" onSubmit={(event) => void submit(event)}>
+    <form
+      className="purchase-form"
+      onSubmit={(event) => void submit(event)}
+    >
       <label className="purchase-field">
         <span>Supplier *</span>
+
         <select
-          value={supplierId}
-          onChange={(event) => setSupplierId(event.target.value)}
-          disabled={saving}
           required
+          value={supplierId}
+          disabled={saving}
+          onChange={(event) =>
+            setSupplierId(event.target.value)
+          }
         >
           <option value="">Select supplier</option>
+
           {suppliers.map((supplier) => (
-            <option key={supplier.id} value={supplier.id}>
+            <option
+              key={supplier.id}
+              value={supplier.id}
+            >
               {supplier.name}
             </option>
           ))}
@@ -293,16 +408,22 @@ function PurchaseForm({
       <div className="purchase-section-heading">
         <div>
           <h3>Purchase items</h3>
-          <p>Choose medicines, quantities and unit costs.</p>
+          <p>
+            Select medicines, quantity and purchase
+            unit cost.
+          </p>
         </div>
 
         <button
           type="button"
           className="purchase-btn secondary"
-          onClick={() =>
-            setLines((current) => [...current, newItem()])
-          }
           disabled={saving || lines.length >= 100}
+          onClick={() =>
+            setLines((current) => [
+              ...current,
+              newItem(),
+            ])
+          }
         >
           <Plus size={16} />
           Add item
@@ -311,16 +432,19 @@ function PurchaseForm({
 
       <div className="purchase-items">
         {lines.map((line, index) => (
-          <div className="purchase-item-card" key={line.key}>
+          <div
+            key={line.key}
+            className="purchase-item-card"
+          >
             <div className="purchase-item-heading">
               <strong>Item {index + 1}</strong>
 
               <button
                 type="button"
                 className="purchase-icon-button danger"
+                aria-label="Remove item"
                 disabled={saving || lines.length === 1}
                 onClick={() => removeLine(line.key)}
-                aria-label="Remove item"
               >
                 <Trash2 size={17} />
               </button>
@@ -329,7 +453,10 @@ function PurchaseForm({
             <div className="purchase-form-grid">
               <label className="purchase-field purchase-full">
                 <span>Medicine *</span>
+
                 <select
+                  required
+                  disabled={saving}
                   value={line.medicine_id}
                   onChange={(event) =>
                     updateLine(
@@ -338,10 +465,10 @@ function PurchaseForm({
                       event.target.value
                     )
                   }
-                  disabled={saving}
-                  required
                 >
-                  <option value="">Select medicine</option>
+                  <option value="">
+                    Select medicine
+                  </option>
 
                   {medicines.map((medicine) => (
                     <option
@@ -362,12 +489,13 @@ function PurchaseForm({
 
               <label className="purchase-field">
                 <span>Quantity *</span>
+
                 <input
                   type="number"
+                  required
                   min="1"
                   max="1000000"
                   step="1"
-                  required
                   value={line.quantity}
                   disabled={saving}
                   onChange={(event) =>
@@ -381,13 +509,14 @@ function PurchaseForm({
               </label>
 
               <label className="purchase-field">
-                <span>Unit cost *</span>
+                <span>Unit Cost *</span>
+
                 <input
                   type="number"
+                  required
                   min="0"
                   max="9999999999.99"
                   step="0.01"
-                  required
                   placeholder="0.00"
                   value={line.unit_cost}
                   disabled={saving}
@@ -403,22 +532,28 @@ function PurchaseForm({
             </div>
 
             <div className="purchase-line-total">
-              Line total: <strong>{money(
-                (Number(line.quantity) || 0) *
-                  (Number(line.unit_cost) || 0)
-              )}</strong>
+              Line Total:{" "}
+              <strong>
+                {money(
+                  (Number(line.quantity) || 0) *
+                    (Number(line.unit_cost) || 0)
+                )}
+              </strong>
             </div>
           </div>
         ))}
       </div>
 
       <div className="purchase-total">
-        <span>Estimated order total</span>
+        <span>Estimated Purchase Total</span>
         <strong>{money(total)}</strong>
       </div>
 
       {(validation || error) && (
-        <div className="purchase-notice error" role="alert">
+        <div
+          className="purchase-notice error"
+          role="alert"
+        >
           <AlertCircle size={18} />
           <span>{validation || error}</span>
         </div>
@@ -428,8 +563,8 @@ function PurchaseForm({
         <button
           type="button"
           className="purchase-btn secondary"
-          onClick={onClose}
           disabled={saving}
+          onClick={onClose}
         >
           Cancel
         </button>
@@ -437,19 +572,33 @@ function PurchaseForm({
         <button
           type="submit"
           className="purchase-btn primary"
-          disabled={saving || suppliers.length === 0 || medicines.length === 0}
+          disabled={
+            saving ||
+            suppliers.length === 0 ||
+            medicines.length === 0
+          }
         >
           {saving ? (
-            <Loader2 size={17} className="purchase-spin" />
+            <Loader2
+              size={17}
+              className="purchase-spin"
+            />
           ) : (
             <ShoppingCart size={17} />
           )}
-          {saving ? "Submitting..." : "Submit Purchase"}
+
+          {saving
+            ? "Creating..."
+            : "Create Purchase"}
         </button>
       </div>
     </form>
   );
 }
+
+// ============================================================
+// RECEIVE PURCHASE FORM
+// ============================================================
 
 function ReceiveForm({
   purchase,
@@ -458,15 +607,10 @@ function ReceiveForm({
   error,
   onClose,
   onSave,
-}: {
-  purchase: Purchase;
-  medicines: MedicineOption[];
-  saving: boolean;
-  error: string | null;
-  onClose: () => void;
-  onSave: (lines: ReceiveDraftLine[]) => Promise<void>;
-}) {
-  const [lines, setLines] = useState<ReceiveDraftLine[]>(
+}: ReceiveFormProps) {
+  const [lines, setLines] = useState<
+    ReceiveDraftLine[]
+  >(
     purchase.items.map((item) => ({
       purchase_order_item_id: item.id,
       medicine_id: item.medicine_id,
@@ -476,11 +620,15 @@ function ReceiveForm({
     }))
   );
 
-  const [validation, setValidation] = useState("");
+  const [validation, setValidation] =
+    useState("");
 
   function updateLine(
     itemId: string,
-    field: "batch_number" | "manufactured_at" | "expires_at",
+    field:
+      | "batch_number"
+      | "manufactured_at"
+      | "expires_at",
     value: string
   ) {
     setLines((current) =>
@@ -490,25 +638,62 @@ function ReceiveForm({
           : line
       )
     );
+
     setValidation("");
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(
+    event: FormEvent<HTMLFormElement>
+  ) {
     event.preventDefault();
 
+    if (saving) return;
+
+    if (!isDraft(purchase.status)) {
+      setValidation(
+        "Only draft purchases can be received."
+      );
+      return;
+    }
+
+    if (lines.length === 0) {
+      setValidation(
+        "This purchase has no items to receive."
+      );
+      return;
+    }
+
     for (const line of lines) {
+      const batchNumber =
+        line.batch_number.trim();
+
       if (
-        !line.batch_number.trim() ||
-        line.batch_number.trim().length > 100
+        !batchNumber ||
+        batchNumber.length > 100
       ) {
         setValidation(
-          "Enter a batch number (maximum 100 characters) for every item."
+          "Every item needs a batch number " +
+          "(maximum 100 characters)."
         );
         return;
       }
 
-      if (!line.expires_at) {
-        setValidation("Expiry date is required for every item.");
+      if (
+        !validDate(line.expires_at)
+      ) {
+        setValidation(
+          "Every item requires a valid expiry date."
+        );
+        return;
+      }
+
+      if (
+        line.manufactured_at &&
+        !validDate(line.manufactured_at)
+      ) {
+        setValidation(
+          "Manufacturing date is invalid."
+        );
         return;
       }
 
@@ -517,14 +702,16 @@ function ReceiveForm({
         line.manufactured_at >= line.expires_at
       ) {
         setValidation(
-          "Expiry date must be after manufacturing date."
+          "Expiry date must be later than " +
+          "manufacturing date."
         );
         return;
       }
 
       if (line.expires_at <= today()) {
         setValidation(
-          "Expiry date must be in the future."
+          "Expired medicines cannot be received " +
+          "into saleable stock using this form."
         );
         return;
       }
@@ -541,21 +728,26 @@ function ReceiveForm({
     >
       <div className="purchase-receive-intro">
         <strong>{purchase.order_number}</strong>
+
         <p>
-          Enter batch numbers and expiry dates to
-          receive this purchase into inventory.
+          Enter the actual batch number and expiry
+          date printed on each medicine package.
+          Receiving will add the purchased quantity
+          to Inventory.
         </p>
       </div>
 
       <div className="purchase-items">
         {lines.map((line, index) => {
           const medicine = medicines.find(
-            (item) => item.id === line.medicine_id
+            (item) =>
+              item.id === line.medicine_id
           );
 
           const orderItem = purchase.items.find(
             (item) =>
-              item.id === line.purchase_order_item_id
+              item.id ===
+              line.purchase_order_item_id
           );
 
           return (
@@ -569,21 +761,28 @@ function ReceiveForm({
                     {medicine?.brand_name ||
                       `Medicine ${index + 1}`}
                   </strong>
+
                   <p>
-                    Ordered quantity:{" "}
+                    Ordered Quantity:{" "}
                     {orderItem?.quantity ?? "—"}
+                    {" | "}
+                    Unit Cost:{" "}
+                    {money(
+                      orderItem?.unit_cost ?? 0
+                    )}
                   </p>
                 </div>
               </div>
 
               <div className="purchase-form-grid">
                 <label className="purchase-field purchase-full">
-                  <span>Batch number *</span>
+                  <span>Batch Number *</span>
+
                   <input
-                    value={line.batch_number}
-                    maxLength={100}
                     required
-                    placeholder="Enter batch number"
+                    maxLength={100}
+                    placeholder="e.g. OMI-BATCH-001"
+                    value={line.batch_number}
                     disabled={saving}
                     onChange={(event) =>
                       updateLine(
@@ -596,7 +795,8 @@ function ReceiveForm({
                 </label>
 
                 <label className="purchase-field">
-                  <span>Manufacturing date</span>
+                  <span>Manufacturing Date</span>
+
                   <input
                     type="date"
                     value={line.manufactured_at}
@@ -612,11 +812,13 @@ function ReceiveForm({
                 </label>
 
                 <label className="purchase-field">
-                  <span>Expiry date *</span>
+                  <span>Expiry Date *</span>
+
                   <input
-                    type="date"
-                    value={line.expires_at}
                     required
+                    type="date"
+                    min={today()}
+                    value={line.expires_at}
                     disabled={saving}
                     onChange={(event) =>
                       updateLine(
@@ -634,7 +836,10 @@ function ReceiveForm({
       </div>
 
       {(validation || error) && (
-        <div className="purchase-notice error" role="alert">
+        <div
+          className="purchase-notice error"
+          role="alert"
+        >
           <AlertCircle size={18} />
           <span>{validation || error}</span>
         </div>
@@ -653,77 +858,124 @@ function ReceiveForm({
         <button
           type="submit"
           className="purchase-btn primary"
-          disabled={saving || lines.length === 0}
+          disabled={
+            saving ||
+            lines.length === 0
+          }
         >
           {saving ? (
-            <Loader2 size={17} className="purchase-spin" />
+            <Loader2
+              size={17}
+              className="purchase-spin"
+            />
           ) : (
             <ClipboardCheck size={17} />
           )}
-          {saving ? "Receiving..." : "Receive Purchase"}
+
+          {saving
+            ? "Receiving..."
+            : "Confirm Receive"}
         </button>
       </div>
     </form>
   );
 }
 
+// ============================================================
+// PURCHASES PAGE
+// ============================================================
+
 export default function PurchasesPage() {
-  const [purchases, setPurchases] = useState<Purchase[]>([]);
-  const [suppliers, setSuppliers] = useState<SupplierOption[]>([]);
-  const [medicines, setMedicines] = useState<MedicineOption[]>([]);
+  const [purchases, setPurchases] =
+    useState<Purchase[]>([]);
+
+  const [suppliers, setSuppliers] =
+    useState<SupplierOption[]>([]);
+
+  const [medicines, setMedicines] =
+    useState<MedicineOption[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  const [listError, setListError] = useState<string | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<Notice | null>(null);
+  const [listError, setListError] =
+    useState<string | null>(null);
+
+  const [formError, setFormError] =
+    useState<string | null>(null);
+
+  const [notice, setNotice] =
+    useState<Notice | null>(null);
 
   const [search, setSearch] = useState("");
-  const [createOpen, setCreateOpen] = useState(false);
-  const [receiveTarget, setReceiveTarget] = useState<Purchase | null>(null);
-  const [detailsTarget, setDetailsTarget] = useState<Purchase | null>(null);
+
+  const [createOpen, setCreateOpen] =
+    useState(false);
+
+  const [receiveTarget, setReceiveTarget] =
+    useState<Purchase | null>(null);
+
+  const [detailsTarget, setDetailsTarget] =
+    useState<Purchase | null>(null);
+
+  // ==========================================================
+  // LOAD PURCHASE DATA
+  // ==========================================================
 
   const loadData = useCallback(async () => {
     setLoading(true);
     setListError(null);
 
-    const results = await Promise.allSettled([
-      getPurchases(),
-      getPurchaseSuppliers(),
-      getPurchaseMedicines(),
-    ]);
+    try {
+      const results = await Promise.allSettled([
+        getPurchases(),
+        getPurchaseSuppliers(),
+        getPurchaseMedicines(),
+      ]);
 
-    if (results[0].status === "fulfilled") {
-      setPurchases(results[0].value);
-    } else {
-      setListError(errorMessage(results[0].reason));
+      if (results[0].status === "fulfilled") {
+        setPurchases(results[0].value);
+      } else {
+        setListError(
+          errorMessage(results[0].reason)
+        );
+      }
+
+      if (results[1].status === "fulfilled") {
+        setSuppliers(results[1].value);
+      } else {
+        setListError(
+          (current) =>
+            current ??
+            `Suppliers: ${
+              errorMessage(results[1].reason)
+            }`
+        );
+      }
+
+      if (results[2].status === "fulfilled") {
+        setMedicines(results[2].value);
+      } else {
+        setListError(
+          (current) =>
+            current ??
+            `Medicines: ${
+              errorMessage(results[2].reason)
+            }`
+        );
+      }
+    } finally {
+      setLoading(false);
     }
-
-    if (results[1].status === "fulfilled") {
-      setSuppliers(results[1].value);
-    } else {
-      setListError((current) =>
-        current ??
-        `Suppliers: ${errorMessage(results[1].reason)}`
-      );
-    }
-
-    if (results[2].status === "fulfilled") {
-      setMedicines(results[2].value);
-    } else {
-      setListError((current) =>
-        current ??
-        `Medicines: ${errorMessage(results[2].reason)}`
-      );
-    }
-
-    setLoading(false);
   }, []);
 
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  // ==========================================================
+  // LOOKUP MAPS
+  // ==========================================================
 
   const supplierNames = useMemo(
     () =>
@@ -747,42 +999,64 @@ export default function PurchasesPage() {
     [medicines]
   );
 
+  // ==========================================================
+  // SEARCH FILTER
+  // ==========================================================
+
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
 
     if (!term) return purchases;
 
     return purchases.filter((purchase) => {
-      const text = [
+      const searchable = [
         purchase.order_number,
         purchase.status,
         purchase.id,
-        supplierNames.get(purchase.supplier_id) ?? "",
+        supplierNames.get(purchase.supplier_id) ??
+          "",
       ]
         .join(" ")
         .toLowerCase();
 
-      return text.includes(term);
+      return searchable.includes(term);
     });
   }, [purchases, search, supplierNames]);
 
+  // ==========================================================
+  // STATS
+  // ==========================================================
+
   const stats = useMemo(() => {
     const received = purchases.filter(
-      (purchase) =>
-        purchase.status.toLowerCase() === "received"
+      (purchase) => isReceived(purchase.status)
     ).length;
+
+    const drafts = purchases.filter(
+      (purchase) => isDraft(purchase.status)
+    ).length;
+
+    const other =
+      purchases.length - received - drafts;
 
     return {
       total: purchases.length,
       received,
-      awaiting: purchases.length - received,
+      drafts,
+      other,
+
       value: purchases.reduce(
         (sum, purchase) =>
-          sum + (Number(purchase.total_amount) || 0),
+          sum +
+          (Number(purchase.total_amount) || 0),
         0
       ),
     };
   }, [purchases]);
+
+  // ==========================================================
+  // CREATE PURCHASE
+  // ==========================================================
 
   async function submitPurchase(
     supplierId: string,
@@ -799,15 +1073,21 @@ export default function PurchasesPage() {
         items: lines.map((line) => ({
           medicine_id: line.medicine_id,
           quantity: Number(line.quantity),
-          unit_cost: Number(line.unit_cost).toFixed(2),
+          unit_cost:
+            Number(line.unit_cost).toFixed(2),
         })),
       });
 
       setCreateOpen(false);
+
       setNotice({
         type: "success",
-        message: `Purchase ${purchase.order_number} created successfully.`,
+        message:
+          `Purchase ${purchase.order_number} ` +
+          "created successfully. " +
+          "Use Receive to add stock.",
       });
+
       await loadData();
     } catch (error) {
       setFormError(errorMessage(error));
@@ -816,51 +1096,129 @@ export default function PurchasesPage() {
     }
   }
 
-  async function submitReceive(lines: ReceiveDraftLine[]) {
+  // ==========================================================
+  // OPEN RECEIVE FORM
+  // ==========================================================
+
+  async function openReceive(purchase: Purchase) {
+    if (saving || !isDraft(purchase.status)) {
+      return;
+    }
+
+    setFormError(null);
+
+    // Refresh the record before opening the form.
+    try {
+      const latest = await getPurchase(
+        purchase.id
+      );
+
+      if (!isDraft(latest.status)) {
+        setNotice({
+          type: "error",
+          message:
+            "This purchase is no longer in draft status.",
+        });
+
+        await loadData();
+        return;
+      }
+
+      setReceiveTarget(latest);
+    } catch (error) {
+      setNotice({
+        type: "error",
+        message: errorMessage(error),
+      });
+    }
+  }
+
+  // ==========================================================
+  // RECEIVE PURCHASE
+  // ==========================================================
+
+  async function submitReceive(
+    lines: ReceiveDraftLine[]
+  ) {
     if (!receiveTarget || saving) return;
 
     setSaving(true);
     setFormError(null);
 
     try {
+      // Recheck status to prevent receiving
+      // a purchase already processed elsewhere.
+      const latest = await getPurchase(
+        receiveTarget.id
+      );
+
+      if (!isDraft(latest.status)) {
+        throw new Error(
+          "This purchase has already changed status. " +
+          "Please refresh the list."
+        );
+      }
+
       const updated = await receivePurchase(
-        receiveTarget.id,
+        latest.id,
         {
           items: lines.map((line) => ({
             purchase_order_item_id:
               line.purchase_order_item_id,
-            batch_number: line.batch_number.trim(),
+
+            batch_number:
+              line.batch_number.trim(),
+
             manufactured_at:
               line.manufactured_at || null,
-            expires_at: line.expires_at,
+
+            expires_at:
+              line.expires_at,
           })),
         }
       );
 
       setReceiveTarget(null);
+
       setNotice({
         type: "success",
-        message: `Purchase ${updated.order_number} received successfully.`,
+        message:
+          `Purchase ${updated.order_number} ` +
+          "received successfully. " +
+          "Inventory stock has been updated.",
       });
+
       await loadData();
     } catch (error) {
-      setFormError(errorMessage(error));
+      setFormError(
+        errorMessage(error) +
+          " If the request timed out, " +
+          "refresh the purchase list before retrying."
+      );
     } finally {
       setSaving(false);
     }
   }
 
+  // ==========================================================
+  // RENDER
+  // ==========================================================
+
   return (
     <div className="purchases-page">
+      {/* HEADER */}
       <header className="purchase-page-header">
         <div>
           <span className="purchase-eyebrow">
             PHARMACY OPERATIONS
           </span>
+
           <h1>Purchase Management</h1>
+
           <p>
-            Create purchase orders, track supplier
-            purchases and receive stock batches.
+            Create purchase orders, manage suppliers
+            and receive medicine batches into
+            inventory.
           </p>
         </div>
 
@@ -873,7 +1231,9 @@ export default function PurchasesPage() {
           >
             <RefreshCw
               size={17}
-              className={loading ? "purchase-spin" : ""}
+              className={
+                loading ? "purchase-spin" : ""
+              }
             />
             Refresh
           </button>
@@ -892,18 +1252,24 @@ export default function PurchasesPage() {
         </div>
       </header>
 
+      {/* NOTICES */}
       {notice && (
-        <div className={`purchase-notice ${notice.type}`} role="status">
+        <div
+          className={`purchase-notice ${notice.type}`}
+          role="status"
+        >
           {notice.type === "success" ? (
             <CheckCircle2 size={19} />
           ) : (
             <AlertCircle size={19} />
           )}
+
           <span>{notice.message}</span>
+
           <button
             type="button"
-            onClick={() => setNotice(null)}
             aria-label="Dismiss notice"
+            onClick={() => setNotice(null)}
           >
             <X size={17} />
           </button>
@@ -911,9 +1277,14 @@ export default function PurchasesPage() {
       )}
 
       {listError && (
-        <div className="purchase-notice error" role="alert">
+        <div
+          className="purchase-notice error"
+          role="alert"
+        >
           <AlertCircle size={19} />
+
           <span>{listError}</span>
+
           <button
             type="button"
             onClick={() => void loadData()}
@@ -923,9 +1294,11 @@ export default function PurchasesPage() {
         </div>
       )}
 
+      {/* PURCHASE STATS */}
       <div className="purchase-stats">
         <div className="purchase-stat-card">
           <ShoppingCart size={22} />
+
           <div>
             <span>Loaded Purchases</span>
             <strong>{stats.total}</strong>
@@ -935,41 +1308,58 @@ export default function PurchasesPage() {
 
         <div className="purchase-stat-card">
           <CheckCircle2 size={22} />
+
           <div>
             <span>Received</span>
             <strong>{stats.received}</strong>
-            <small>Completed orders</small>
+            <small>Completed purchases</small>
           </div>
         </div>
 
         <div className="purchase-stat-card">
           <Truck size={22} />
+
           <div>
-            <span>Other Statuses</span>
-            <strong>{stats.awaiting}</strong>
-            <small>Not marked received</small>
+            <span>Draft Purchases</span>
+            <strong>{stats.drafts}</strong>
+            <small>Waiting to receive stock</small>
           </div>
         </div>
 
         <div className="purchase-stat-card">
           <PackagePlus size={22} />
+
           <div>
             <span>Purchase Value</span>
-            <strong>{money(stats.value)}</strong>
-            <small>Loaded orders only</small>
+
+            <strong>
+              {money(stats.value)}
+            </strong>
+
+            <small>
+              Loaded orders only
+              {stats.other > 0
+                ? ` · ${stats.other} other statuses`
+                : ""}
+            </small>
           </div>
         </div>
       </div>
 
+      {/* PURCHASE DIRECTORY */}
       <section className="purchase-panel">
         <div className="purchase-panel-header">
           <div>
             <h2>Purchase Orders</h2>
-            <p>{filtered.length} orders shown</p>
+
+            <p>
+              {filtered.length} orders shown
+            </p>
           </div>
 
           <label className="purchase-search">
             <Search size={18} />
+
             <input
               type="search"
               placeholder="Search orders or suppliers..."
@@ -983,16 +1373,20 @@ export default function PurchasesPage() {
 
         {loading ? (
           <div className="purchase-empty">
-            <Loader2 size={30} className="purchase-spin" />
+            <Loader2
+              size={30}
+              className="purchase-spin"
+            />
             <p>Loading purchases...</p>
           </div>
         ) : filtered.length === 0 ? (
           <div className="purchase-empty">
             <ShoppingCart size={36} />
             <h3>No purchases found</h3>
+
             <p>
               Create a purchase order to start
-              managing incoming pharmacy stock.
+              managing incoming stock.
             </p>
           </div>
         ) : (
@@ -1018,46 +1412,81 @@ export default function PurchasesPage() {
                         {purchase.order_number}
                       </strong>
                     </td>
+
                     <td>
                       {supplierNames.get(
                         purchase.supplier_id
-                      ) || purchase.supplier_id.slice(0, 8)}
+                      ) ||
+                        purchase.supplier_id.slice(
+                          0,
+                          8
+                        )}
                     </td>
-                    <td>{purchase.items.length}</td>
+
+                    <td>
+                      {purchase.items.length}
+                    </td>
+
                     <td>
                       <strong>
-                        {money(purchase.total_amount)}
+                        {money(
+                          purchase.total_amount
+                        )}
                       </strong>
                     </td>
+
                     <td>
                       <span
-                        className={`purchase-status ${getStatusClass(purchase.status)}`}
+                        className={
+                          `purchase-status ` +
+                          getStatusClass(
+                            purchase.status
+                          )
+                        }
                       >
                         {purchase.status}
                       </span>
                     </td>
-                    <td>{formatDate(purchase.received_at)}</td>
+
+                    <td>
+                      {formatDate(
+                        purchase.received_at
+                      )}
+                    </td>
+
                     <td>
                       <div className="purchase-actions">
+                        {/* VIEW DETAILS */}
                         <button
                           type="button"
                           className="purchase-icon-button"
-                          title="View details"
+                          title="View purchase details"
+                          aria-label={
+                            `View ${purchase.order_number}`
+                          }
                           onClick={() =>
-                            setDetailsTarget(purchase)
+                            setDetailsTarget(
+                              purchase
+                            )
                           }
                         >
                           <Eye size={17} />
                         </button>
 
-                        {purchase.status.toLowerCase() === "pending" && (
+                        {/* RECEIVE DRAFT PURCHASE */}
+                        {isDraft(
+                          purchase.status
+                        ) && (
                           <button
                             type="button"
                             className="purchase-btn receive"
-                            onClick={() => {
-                              setFormError(null);
-                              setReceiveTarget(purchase);
-                            }}
+                            title="Receive medicine stock"
+                            disabled={saving}
+                            onClick={() =>
+                              void openReceive(
+                                purchase
+                              )
+                            }
                           >
                             <ClipboardCheck size={16} />
                             Receive
@@ -1073,6 +1502,7 @@ export default function PurchasesPage() {
         )}
       </section>
 
+      {/* CREATE PURCHASE MODAL */}
       {createOpen && (
         <div className="purchase-modal-backdrop">
           <section
@@ -1086,13 +1516,20 @@ export default function PurchasesPage() {
                 <h2 id="purchase-create-title">
                   Create Purchase Order
                 </h2>
-                <p>Supplier and medicine item details</p>
+
+                <p>
+                  Supplier and medicine item details
+                </p>
               </div>
+
               <button
                 type="button"
                 className="purchase-icon-button"
                 disabled={saving}
-                onClick={() => setCreateOpen(false)}
+                onClick={() =>
+                  setCreateOpen(false)
+                }
+                aria-label="Close"
               >
                 <X size={20} />
               </button>
@@ -1103,13 +1540,16 @@ export default function PurchasesPage() {
               medicines={medicines}
               saving={saving}
               error={formError}
-              onClose={() => setCreateOpen(false)}
+              onClose={() =>
+                setCreateOpen(false)
+              }
               onSave={submitPurchase}
             />
           </section>
         </div>
       )}
 
+      {/* RECEIVE PURCHASE MODAL */}
       {receiveTarget && (
         <div className="purchase-modal-backdrop">
           <section
@@ -1123,10 +1563,13 @@ export default function PurchasesPage() {
                 <h2 id="purchase-receive-title">
                   Receive Purchase
                 </h2>
+
                 <p>
-                  Enter batch details for each item
+                  Enter Batch Number and Expiry Date
+                  for each medicine.
                 </p>
               </div>
+
               <button
                 type="button"
                 className="purchase-icon-button"
@@ -1134,6 +1577,7 @@ export default function PurchasesPage() {
                 onClick={() =>
                   setReceiveTarget(null)
                 }
+                aria-label="Close"
               >
                 <X size={20} />
               </button>
@@ -1145,13 +1589,16 @@ export default function PurchasesPage() {
               medicines={medicines}
               saving={saving}
               error={formError}
-              onClose={() => setReceiveTarget(null)}
+              onClose={() =>
+                setReceiveTarget(null)
+              }
               onSave={submitReceive}
             />
           </section>
         </div>
       )}
 
+      {/* PURCHASE DETAILS MODAL */}
       {detailsTarget && (
         <div className="purchase-modal-backdrop">
           <section
@@ -1165,12 +1612,17 @@ export default function PurchasesPage() {
                 <h2 id="purchase-details-title">
                   {detailsTarget.order_number}
                 </h2>
+
                 <p>Purchase order information</p>
               </div>
+
               <button
                 type="button"
                 className="purchase-icon-button"
-                onClick={() => setDetailsTarget(null)}
+                onClick={() =>
+                  setDetailsTarget(null)
+                }
+                aria-label="Close"
               >
                 <X size={20} />
               </button>
@@ -1179,33 +1631,44 @@ export default function PurchasesPage() {
             <div className="purchase-details-content">
               <div className="purchase-detail-line">
                 <span>Supplier</span>
+
                 <strong>
                   {supplierNames.get(
                     detailsTarget.supplier_id
-                  ) || detailsTarget.supplier_id}
+                  ) ||
+                    detailsTarget.supplier_id}
                 </strong>
               </div>
 
               <div className="purchase-detail-line">
                 <span>Status</span>
-                <strong>{detailsTarget.status}</strong>
-              </div>
 
-              <div className="purchase-detail-line">
-                <span>Total</span>
                 <strong>
-                  {money(detailsTarget.total_amount)}
+                  {detailsTarget.status}
                 </strong>
               </div>
 
               <div className="purchase-detail-line">
-                <span>Received</span>
+                <span>Total Amount</span>
+
                 <strong>
-                  {formatDate(detailsTarget.received_at)}
+                  {money(
+                    detailsTarget.total_amount
+                  )}
                 </strong>
               </div>
 
-              <h3>Order items</h3>
+              <div className="purchase-detail-line">
+                <span>Received At</span>
+
+                <strong>
+                  {formatDate(
+                    detailsTarget.received_at
+                  )}
+                </strong>
+              </div>
+
+              <h3>Order Items</h3>
 
               {detailsTarget.items.map((item) => (
                 <div
@@ -1213,12 +1676,18 @@ export default function PurchasesPage() {
                   key={item.id}
                 >
                   <strong>
-                    {medicineNames.get(item.medicine_id) ||
+                    {medicineNames.get(
+                      item.medicine_id
+                    ) ||
                       item.medicine_id}
                   </strong>
+
                   <span>
-                    {item.quantity} × {money(item.unit_cost)}
+                    {item.quantity}
+                    {" × "}
+                    {money(item.unit_cost)}
                   </span>
+
                   <strong>
                     {money(
                       item.quantity *
@@ -1233,10 +1702,30 @@ export default function PurchasesPage() {
               <button
                 type="button"
                 className="purchase-btn secondary"
-                onClick={() => setDetailsTarget(null)}
+                onClick={() =>
+                  setDetailsTarget(null)
+                }
               >
                 Close
               </button>
+
+              {isDraft(
+                detailsTarget.status
+              ) && (
+                <button
+                  type="button"
+                  className="purchase-btn receive"
+                  onClick={() => {
+                    const target = detailsTarget;
+
+                    setDetailsTarget(null);
+                    void openReceive(target);
+                  }}
+                >
+                  <ClipboardCheck size={16} />
+                  Receive Stock
+                </button>
+              )}
             </div>
           </section>
         </div>

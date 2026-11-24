@@ -14,17 +14,10 @@ from app.modules.medicines.schemas import (
 )
 from app.modules.medicines.services import MedicineService
 
-router = APIRouter(
-    prefix="/medicines",
-    tags=["Medicines"],
-)
+router = APIRouter(prefix="/medicines", tags=["Medicines"])
 
 
-@router.post(
-    "",
-    response_model=MedicineResponse,
-    status_code=status.HTTP_201_CREATED,
-)
+@router.post("", response_model=MedicineResponse, status_code=status.HTTP_201_CREATED)
 async def create_medicine(
     data: MedicineCreate,
     pharmacy_id: AdminPharmacy,
@@ -78,10 +71,7 @@ async def update_medicine(
     )
 
 
-@router.delete(
-    "/{medicine_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
+@router.delete("/{medicine_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_medicine(
     medicine_id: UUID,
     pharmacy_id: AdminPharmacy,

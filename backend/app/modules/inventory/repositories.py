@@ -85,6 +85,7 @@ class InventoryRepository:
             .where(
                 MedicineBatch.pharmacy_id == pharmacy_id,
                 MedicineBatch.quantity_on_hand > 0,
+                MedicineBatch.expires_at >= date.today(),
                 MedicineBatch.expires_at <= end_date,
             )
             .order_by(MedicineBatch.expires_at, MedicineBatch.id)
@@ -93,6 +94,8 @@ class InventoryRepository:
         )
         return list((await self.db.scalars(stmt)).all())
 
+       
+    
     async def movements(
         self,
         pharmacy_id: UUID,

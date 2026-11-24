@@ -34,9 +34,9 @@ class Settings(BaseSettings):
     )
 
     GEMINI_API_KEY: str | None = None
-    GEMINI_MODEL: str = "gemini-3.8-flash"
+    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
 
-    AI_MAX_TOOL_ROUNDS: int = Field(default=3, ge=1, le=5)
+    AI_MAX_TOOL_ROUNDS: int = Field(default=2, ge=1, le=5)
     AI_MAX_HISTORY_MESSAGES: int = Field(default=20, ge=2, le=40)
 
     EMBEDDING_SERVICE_URL: str = "http://embedder:80"

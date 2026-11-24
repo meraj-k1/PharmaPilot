@@ -26,6 +26,7 @@ import {
   sendChatMessage,
 } from "./chatApi";
 
+import AIMessage from "./AIMessage";
 import type { ChatSource } from "./types";
 
 import "./chat.css";
@@ -83,17 +84,26 @@ function getErrorMessage(error: unknown): string {
       return "The chat request is invalid. Please check your message.";
     }
 
+    if (
+      data?.error?.error_code === "AI_DAILY_QUOTA_EXCEEDED" ||
+      data?.error?.code === "AI_DAILY_QUOTA_EXCEEDED"
+    ) {
+      return "The daily AI usage limit has been reached. Please try again after the quota resets.";
+    }
+
     if (status === 429) {
       return "The AI service is receiving too many requests. Please try again later.";
     }
 
     if (status === 502 || status === 503 || status === 504) {
+      if (typeof data?.error?.message === "string") {
+        return data.error.message;
+      }
+
       return "The AI service is temporarily unavailable. Please try again later.";
     }
 
-    if (
-      typeof data?.error?.message === "string"
-    ) {
+    if (typeof data?.error?.message === "string") {
       return data.error.message;
     }
 
@@ -161,7 +171,6 @@ export default function ChatPage() {
     useState<ChatMessage[]>([]);
 
   const [input, setInput] = useState("");
-
   const [sending, setSending] = useState(false);
 
   const [notice, setNotice] =
@@ -204,14 +213,9 @@ export default function ChatPage() {
     setNotice(null);
     setInput("");
 
-    const userMessage = createMessage(
-      "user",
-      cleanedMessage
-    );
-
     setMessages((previous) => [
       ...previous,
-      userMessage,
+      createMessage("user", cleanedMessage),
     ]);
 
     try {
@@ -219,15 +223,13 @@ export default function ChatPage() {
         cleanedMessage
       );
 
-      const assistantMessage = createMessage(
-        "assistant",
-        reply.answer,
-        reply.sources
-      );
-
       setMessages((previous) => [
         ...previous,
-        assistantMessage,
+        createMessage(
+          "assistant",
+          reply.answer,
+          reply.sources ?? []
+        ),
       ]);
     } catch (error) {
       setNotice({
@@ -267,6 +269,7 @@ export default function ChatPage() {
     }
 
     resetChatConversation();
+
     setMessages([]);
     setInput("");
     setNotice(null);
@@ -288,7 +291,7 @@ export default function ChatPage() {
 
           <p>
             Ask questions about medicines,
-            inventory, pharmacy knowledge
+            inventory, pharmacy knowledge,
             and daily operations.
           </p>
         </div>
@@ -364,26 +367,24 @@ export default function ChatPage() {
 
               <p>
                 Search medicines, explore inventory,
-                ask questions and use your uploaded
+                ask questions, and use your uploaded
                 pharmacy knowledge.
               </p>
 
               <div className="chat-suggestions">
-                {SUGGESTED_PROMPTS.map(
-                  (prompt) => (
-                    <button
-                      key={prompt}
-                      type="button"
-                      onClick={() =>
-                        void submitMessage(prompt)
-                      }
-                      disabled={sending}
-                    >
-                      <Sparkles size={15} />
-                      {prompt}
-                    </button>
-                  )
-                )}
+                {SUGGESTED_PROMPTS.map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    onClick={() =>
+                      void submitMessage(prompt)
+                    }
+                    disabled={sending}
+                  >
+                    <Sparkles size={15} />
+                    {prompt}
+                  </button>
+                ))}
               </div>
             </div>
           )}
@@ -397,37 +398,37 @@ export default function ChatPage() {
                   : "assistant"
               }`}
             >
-              <div className="chat-message-avatar">
-                {message.role === "user" ? (
-                  <UserRound size={18} />
-                ) : (
-                  <Bot size={18} />
-                )}
-              </div>
+              {message.role === "assistant" ? (
+                <div className="chat-message-body">
+                  <AIMessage
+                    content={message.content}
+                  />
 
-              <div className="chat-message-body">
-                <div className="chat-message-meta">
-                  <strong>
-                    {message.role === "user"
-                      ? "You"
-                      : "PharmaPilot AI"}
-                  </strong>
-
-                  <span>
-                    {formatTime(
-                      message.createdAt
-                    )}
-                  </span>
+                  <SourceList
+                    sources={message.sources}
+                  />
                 </div>
+              ) : (
+                <>
+                  <div className="chat-message-avatar">
+                    <UserRound size={18} />
+                  </div>
 
-                <div className="chat-message-content">
-                  {message.content}
-                </div>
+                  <div className="chat-message-body">
+                    <div className="chat-message-meta">
+                      <strong>You</strong>
 
-                <SourceList
-                  sources={message.sources}
-                />
-              </div>
+                      <span>
+                        {formatTime(message.createdAt)}
+                      </span>
+                    </div>
+
+                    <div className="chat-message-content">
+                      {message.content}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           ))}
 
@@ -468,9 +469,7 @@ export default function ChatPage() {
                 ref={textareaRef}
                 value={input}
                 onChange={(event) =>
-                  setInput(
-                    event.target.value
-                  )
+                  setInput(event.target.value)
                 }
                 onKeyDown={handleKeyDown}
                 placeholder="Ask PharmaPilot anything..."
@@ -484,8 +483,7 @@ export default function ChatPage() {
                 type="submit"
                 className="chat-send-button"
                 disabled={
-                  sending ||
-                  !input.trim()
+                  sending || !input.trim()
                 }
                 aria-label="Send message"
               >
@@ -514,9 +512,9 @@ export default function ChatPage() {
 
           <p className="chat-disclaimer">
             AI-generated information may be
-            inaccurate. Verify important
-            medication and clinical decisions
-            with qualified professionals.
+            inaccurate. Verify important medication
+            and clinical decisions with qualified
+            professionals.
           </p>
         </div>
       </section>

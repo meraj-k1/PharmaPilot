@@ -21,10 +21,7 @@ router = APIRouter(
 )
 
 
-@router.post(
-    "/chat",
-    response_model=ChatResponse,
-)
+@router.post("/chat", response_model=ChatResponse)
 async def chat(
     payload: ChatRequest,
     pharmacy: StaffOrAdminPharmacy,
