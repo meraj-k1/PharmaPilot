@@ -6,6 +6,12 @@ PharmaPilot is a full-stack pharmacy management application that combines operat
 
 > **Project status:** Active development / academic project. The APIs and workflows described here reflect the shared code and project setup, but this README is not a claim that every feature has passed end-to-end testing. Verify configuration, authentication, inventory calculations, and medical content before any real-world deployment.
 
+## Important Link:
+
+- **Live Link:** https://pharmapilot-backend-s3s1.onrender.com/docs
+- **git Link:** https://github.com/meraj-k1/PharmaPilot
+- **Explain video Link:** https://drive.google.com/file/d/1x6tLIJRjmHX8NF5Bd4XMSLQ9vBpERnwo/view?usp=sharing
+
 ## Features
 
 - **Authentication and pharmacy access:** authenticated workflows with pharmacy-specific authorization (admin/staff roles).
